@@ -1,0 +1,18 @@
+{
+  "name": "mcr20a-rf-driver",
+  "version": "0.0.1",
+  "description": "RF driver for Freescale MCR20A 2.4GHz 802.15.4 wireless transceiver",
+  "keywords": [
+    "rf",
+    "driver",
+    "802.15.4"
+  ],
+  "author": "Andrei Kovacs <Andrei.Kovacs@freescale.com>",
+  "license": "BSD 3-clause",
+  "dependencies": {
+    "nanostack-libservice": "~3.0.0",
+    "sal-stack-nanostack": "^2.1.0",
+    "mbed-drivers": "~0.8.0"
+  },
+  "targetDependencies": {}
+}
