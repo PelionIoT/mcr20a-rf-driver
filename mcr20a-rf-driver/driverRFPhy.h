@@ -22,41 +22,7 @@ extern "C" {
 
 #include "nanostack/platform/arm_hal_phy.h"
 
-/*AT86RF212 PHY Modes*/
-#define BPSK_20                     0x00
-#define BPSK_40                     0x04
-#define BPSK_40_ALT                 0x14
-#define OQPSK_SIN_RC_100            0x08
-#define OQPSK_SIN_RC_200            0x09
-#define OQPSK_RC_100                0x18
-#define OQPSK_RC_200                0x19
-#define OQPSK_SIN_250               0x0c
-#define OQPSK_SIN_500               0x0d
-#define OQPSK_SIN_500_ALT           0x0f
-#define OQPSK_RC_250                0x1c
-#define OQPSK_RC_500                0x1d
-#define OQPSK_RC_500_ALT            0x1f
-#define OQPSK_SIN_RC_400_SCR_ON     0x2A
-#define OQPSK_SIN_RC_400_SCR_OFF    0x0A
-#define OQPSK_RC_400_SCR_ON         0x3A
-#define OQPSK_RC_400_SCR_OFF        0x1A
-#define OQPSK_SIN_1000_SCR_ON       0x2E
-#define OQPSK_SIN_1000_SCR_OFF      0x0E
-#define OQPSK_RC_1000_SCR_ON        0x3E
-#define OQPSK_RC_1000_SCR_OFF       0x1E
-
-/*Worst case sensitivity*/
-#define RF_DEFAULT_SENSITIVITY -88
-/*Run calibration every 5 minutes*/
-#define RF_CALIBRATION_INTERVAL 6000000
-/*Wait ACK for 2.5ms*/
-#define RF_ACK_WAIT_DEFAULT_TIMEOUT 50
-/*CCA Timeout*/
-#define RF_CCA_TIMEOUT  15
-
 #define RF_BUFFER_SIZE 128
-
-#define RF_PHY_MODE OQPSK_SIN_250
 
 /*Radio RX and TX state definitions*/
 #define RFF_ON 0x01
@@ -67,13 +33,13 @@ extern "C" {
 #define RF_MODE_NORMAL  0
 #define RF_MODE_SNIFFER 1
 
-/*Atmel RF Part Type*/
+#define RF_CCA_THRESHOLD 75 /* -75 dBm */
+
+/*RF Part Type*/
 typedef enum
 {
-    ATMEL_UNKNOW_DEV = 0,
-    ATMEL_AT86RF212,
-    ATMEL_AT86RF231,
-    ATMEL_AT86RF233
+    FREESCALE_UNKNOW_DEV = 0,
+    FREESCALE_MCR20A
 }rf_trx_part_e;
 
 /*Atmel RF states*/
@@ -128,25 +94,6 @@ extern uint8_t rf_scale_lqi(int8_t rssi);
  * \brief TX power has to be set before network start.
  *
  * \param power
- *              AT86RF233
- *              0 = 4 dBm
- *              1 = 3.7 dBm
- *              2 = 3.4 dBm
- *              3 = 3 dBm
- *              4 = 2.5 dBm
- *              5 = 2 dBm
- *              6 = 1 dBm
- *              7 = 0 dBm
- *              8 = -1 dBm
- *              9 = -2 dBm
- *              10 = -3 dBm
- *              11 = -4 dBm
- *              12 = -6 dBm
- *              13 = -8 dBm
- *              14 = -12 dBm
- *              15 = -17 dBm
- *
- *              AT86RF212B
  *              See datasheet for TX power settings
  *
  * \return 0, Supported Value
