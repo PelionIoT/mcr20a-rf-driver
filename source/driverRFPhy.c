@@ -52,7 +52,6 @@ static uint8_t rf_rnd_rssi = 0;
 static int8_t rf_radio_driver_id = -1;
 static phy_device_driver_s device_driver;
 static uint8_t MAC_address[8] = {1, 2, 3, 4, 5, 6, 7, 8};
-//gcapraru static uint8_t MAC_address[8] = {0xfc,0xc2,0x3d,0x00,0x00,0x04,0xbd,0xa5};
 static phy_device_channel_info_s channel_info;
 static uint8_t mac_tx_handle = 0;
 

@@ -56,17 +56,10 @@ DigitalOut RF_RST(D5);
 InterruptIn RF_IRQ (D2);
 DigitalIn RF_IRQ_PIN (D2);
 
-//gcapraru 
-extern Serial pc;
 
 
 extern "C" void PHY_InterruptHandler(void);
 
-
-extern "C" void xcvr_dbg(char* s)
-{
-    pc.printf(s);    
-}
 
 /*****************************************************************************/
 /*****************************************************************************/
