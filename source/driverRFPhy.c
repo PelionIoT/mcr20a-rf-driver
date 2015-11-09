@@ -29,6 +29,10 @@
 #define gPhyAckWaitDuration_c 54
 #define gCcaCCA_MODE1_c        1
 
+#define gXcvrRunState_d       gXcvrPwrAutodoze_c
+#define gXcvrLowPowerState_d  gXcvrPwrHibernate_c
+
+
 /* MCR20A XCVR states */
 typedef enum xcvrState_tag{
   gIdle_c,
@@ -39,7 +43,13 @@ typedef enum xcvrState_tag{
   gCCCA_c,
 }xcvrState_t;
 
-xcvrState_t mPhySeqState;
+/* MCR20A XCVR low power states */
+typedef enum xcvrPwrMode_tag{
+    gXcvrPwrIdle_c,
+    gXcvrPwrAutodoze_c,
+    gXcvrPwrDoze_c,
+    gXcvrPwrHibernate_c
+}xcvrPwrMode_t;
 
 /*RF receive buffer*/
 static uint8_t rf_buffer[RF_BUFFER_SIZE];
@@ -52,6 +62,7 @@ static uint16_t tx_len = 0;
 
 /* RF driver data */
 static xcvrState_t mPhySeqState;
+static xcvrPwrMode_t mPwrState;
 static phy_device_driver_s device_driver;
 static uint8_t mStatusAndControlRegs[8];
 static uint8_t rf_rnd = 0;
@@ -70,6 +81,7 @@ static void    rf_abort(void);
 static void    rf_promiscuous(uint8_t mode);
 static void    rf_get_timestamp(uint32_t *pRetClk);
 static void    rf_set_timeout(uint32_t *pEndTime);
+static void    rf_set_power_state(xcvrPwrMode_t newState);
 static uint8_t rf_if_read_rnd(void);
 static uint8_t rf_convert_LQI(uint8_t hwLqi);
 static int8_t  rf_convert_LQI_to_RSSI(uint8_t lqi);
@@ -290,11 +302,8 @@ void rf_write_settings(void)
  */
 void rf_set_short_adr(uint8_t * short_address)
 {
-    uint8_t data[2];
-
-    data[0] = short_address[1];
-    data[1] = short_address[0];    
-    MCR20Drv_IndirectAccessSPIMultiByteWrite(MACSHORTADDRS0_LSB, data, 2);
+    MCR20Drv_IndirectAccessSPIWrite(MACSHORTADDRS0_MSB, short_address[0]);
+    MCR20Drv_IndirectAccessSPIWrite(MACSHORTADDRS0_LSB, short_address[1]);
 }
 
 /*
@@ -306,11 +315,8 @@ void rf_set_short_adr(uint8_t * short_address)
  */
 void rf_set_pan_id(uint8_t *pan_id)
 {
-    uint8_t data[2];
-
-    data[0] = pan_id[1];
-    data[1] = pan_id[0];
-    MCR20Drv_IndirectAccessSPIMultiByteWrite(MACPANID0_LSB, data, 2);
+    MCR20Drv_IndirectAccessSPIWrite(MACPANID0_MSB, pan_id[0]);
+    MCR20Drv_IndirectAccessSPIWrite(MACPANID0_LSB, pan_id[1]);
 }
 
 /*
@@ -322,17 +328,14 @@ void rf_set_pan_id(uint8_t *pan_id)
  */
 void rf_set_address(uint8_t *address)
 {
-    uint8_t data[8];
-    
-    data[0] = address[7];
-    data[1] = address[6];
-    data[2] = address[5];
-    data[3] = address[4];
-    data[4] = address[3];
-    data[5] = address[2];
-    data[6] = address[1];
-    data[7] = address[0];
-    MCR20Drv_IndirectAccessSPIMultiByteWrite(MACLONGADDRS0_0, data, 8);
+    MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_0,  address[7]);
+    MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_8,  address[6]);
+    MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_16, address[5]);
+    MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_24, address[4]);
+    MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_32, address[3]);
+    MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_40, address[2]);
+    MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_48, address[1]);
+    MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_56, address[0]);
 }
 
 /*
@@ -362,6 +365,7 @@ void rf_init(void)
     uint32_t index;
 
     mPhySeqState = gIdle_c;
+    mPwrState = gXcvrPwrIdle_c;
     /*Reset RF module*/
     MCR20Drv_RESET();
     /* Initialize the transceiver SPI driver */
@@ -370,6 +374,8 @@ void rf_init(void)
     MCR20Drv_IndirectAccessSPIWrite(MISC_PAD_CTRL, 0x02);
     /* Set XCVR clock output settings */
     MCR20Drv_Set_CLK_OUT_Freq(gMCR20_ClkOutFreq_d);
+    /* Set default XCVR power state */
+    rf_set_power_state(gXcvrRunState_d);
     /* PHY_CTRL1 default HW settings  + AUTOACK enabled */
     MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, cPHY_CTRL1_AUTOACK);
     /* PHY_CTRL2 : mask all PP interrupts */
@@ -440,6 +446,8 @@ void rf_off(void)
 {
     /* Abort any ongoing sequences */
     rf_abort();
+    /* Set XCVR in a low power state */
+    rf_set_power_state(gXcvrLowPowerState_d);
 }
 
 /*
@@ -490,6 +498,8 @@ int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, 
     /*Check if transmitted data needs to be acked*/
     need_ack = (*data_ptr & 0x20) == 0x20;
 
+    /* Set XCVR power state in run mode */
+    rf_set_power_state(gXcvrRunState_d);
     /* Load data into XCVR */
     tx_len = data_length + 2;
     rf_buffer[0] = tx_len;
@@ -583,6 +593,8 @@ void rf_receive(void)
         return;
     }
 
+    /* Set XCVR power state in run mode */
+    rf_set_power_state(gXcvrRunState_d);
     /* read XVCR settings */
     phyRegs[IRQSTS1] = MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &phyRegs[IRQSTS2], 4);
     /* unmask SEQ interrupt */
@@ -1214,4 +1226,59 @@ static void rf_promiscuous(uint8_t state)
 
     MCR20Drv_IndirectAccessSPIWrite(RX_FRAME_FILTER, rxFrameFltReg);
     MCR20Drv_DirectAccessSPIWrite(PHY_CTRL4, phyCtrl4Reg);
+}
+
+/*
+ * \brief Function used to switch XCVR power state.
+ *
+ * \param state The XCVR power mode
+ *
+ * \return none
+ */
+static void rf_set_power_state(xcvrPwrMode_t newState)
+{
+    uint8_t pwrMode;
+    uint8_t xtalState;
+
+    if( mPwrState == newState )
+    {
+        return;
+    }
+
+    /* Read power settings from RF */
+    pwrMode = MCR20Drv_DirectAccessSPIRead(PWR_MODES);
+    xtalState = pwrMode & cPWR_MODES_XTALEN;
+    
+    switch( newState )
+    {
+    case gXcvrPwrIdle_c:
+        pwrMode &= ~(cPWR_MODES_AUTODOZE);
+        pwrMode |= (cPWR_MODES_XTALEN | cPWR_MODES_PMC_MODE);
+        break;
+    case gXcvrPwrAutodoze_c:
+        pwrMode |= (cPWR_MODES_XTALEN | cPWR_MODES_AUTODOZE | cPWR_MODES_PMC_MODE);
+        break;
+    case gXcvrPwrDoze_c:
+        pwrMode &= ~(cPWR_MODES_AUTODOZE | cPWR_MODES_PMC_MODE);
+        pwrMode |= cPWR_MODES_XTALEN;
+        break;
+    case gXcvrPwrHibernate_c:
+        pwrMode &= ~(cPWR_MODES_XTALEN | cPWR_MODES_AUTODOZE | cPWR_MODES_PMC_MODE);
+        break;
+    default:
+        return;
+    }
+    
+    mPwrState = newState;
+    MCR20Drv_DirectAccessSPIWrite(PWR_MODES, pwrMode);
+    
+    if( !xtalState && (pwrMode & cPWR_MODES_XTALEN))
+    {
+        /* wait for crystal oscillator to complet its warmup */
+        while( ( MCR20Drv_DirectAccessSPIRead(PWR_MODES) & cPWR_MODES_XTAL_READY ) != cPWR_MODES_XTAL_READY);
+        /* wait for radio wakeup from hibernate interrupt */
+        while( ( MCR20Drv_DirectAccessSPIRead(IRQSTS2) & (cIRQSTS2_WAKE_IRQ | cIRQSTS2_TMRSTATUS) ) != (cIRQSTS2_WAKE_IRQ | cIRQSTS2_TMRSTATUS) );
+
+        MCR20Drv_DirectAccessSPIWrite(IRQSTS2, cIRQSTS2_WAKE_IRQ);
+    }
 }
