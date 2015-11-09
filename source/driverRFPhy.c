@@ -358,6 +358,8 @@ void rf_init(void)
     MCR20Drv_Init();
     /* Disable Tristate on MISO for SPI reads */
     MCR20Drv_IndirectAccessSPIWrite(MISC_PAD_CTRL, 0x02);
+    /* Set XCVR clock output settings */
+    MCR20Drv_Set_CLK_OUT_Freq(gMCR20_ClkOutFreq_d);
     /* PHY_CTRL1 default HW settings  + AUTOACK enabled */
     MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, cPHY_CTRL1_AUTOACK);
     /* PHY_CTRL2 : mask all PP interrupts */

@@ -50,8 +50,10 @@
  * macros, masks, flags etc ...
  *---------------------------------------------------------------------------*
  *****************************************************************************/
+
+/* Disable XCVR clock output by default, to reduce power consumption */
 #ifndef gMCR20_ClkOutFreq_d 
-#define gMCR20_ClkOutFreq_d gCLK_OUT_FREQ_4_MHz
+#define gMCR20_ClkOutFreq_d gCLK_OUT_FREQ_DISABLE
 #endif
 
 /*****************************************************************************
