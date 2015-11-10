@@ -381,7 +381,7 @@ void rf_init(void)
     /* PHY_CTRL2 : mask all PP interrupts */
     MCR20Drv_DirectAccessSPIWrite(PHY_CTRL2, (cPHY_CTRL2_CRC_MSK | \
                                               cPHY_CTRL2_PLL_UNLOCK_MSK | \
-                                              cPHY_CTRL2_FILTERFAIL_MSK | \
+                                              /*cPHY_CTRL2_FILTERFAIL_MSK | */ \
                                               cPHY_CTRL2_RX_WMRK_MSK | \
                                               cPHY_CTRL2_CCAMSK | \
                                               cPHY_CTRL2_RXMSK | \
@@ -483,6 +483,12 @@ int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, 
 
     if( mPhySeqState == gRX_c )
     {
+        uint8_t phyReg = MCR20Drv_DirectAccessSPIRead(SEQ_STATE) & 0x1F;
+        /* Check for an Rx in progress. */
+        if((phyReg <= 0x06) || (phyReg == 0x15) || (phyReg == 0x16))
+        {
+            return -1;
+        }
         rf_abort();
     }
 
@@ -502,9 +508,8 @@ int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, 
     rf_set_power_state(gXcvrRunState_d);
     /* Load data into XCVR */
     tx_len = data_length + 2;
-    rf_buffer[0] = tx_len;
-    memcpy(rf_buffer + 1, data_ptr, data_length);
-    MCR20Drv_PB_SPIBurstWrite(rf_buffer, data_length + 1);
+    MCR20Drv_PB_SPIBurstWrite(data_ptr - 1, data_length + 1);
+    MCR20Drv_PB_SPIByteWrite(0,tx_len);
     
     /* Read XCVR registers */
     phyRegs[0] = MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &phyRegs[1], 4);
@@ -943,6 +948,22 @@ void PHY_InterruptHandler(void)
     mStatusAndControlRegs[IRQSTS1] =
         MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[IRQSTS2], 7);
     xcvseqCopy = mStatusAndControlRegs[PHY_CTRL1] & cPHY_CTRL1_XCVSEQ;
+    
+    /* Flter Fail IRQ */
+    if( (mStatusAndControlRegs[IRQSTS1] & cIRQSTS1_FILTERFAIL_IRQ) &&
+       !(mStatusAndControlRegs[PHY_CTRL2] & cPHY_CTRL2_FILTERFAIL_MSK) )
+    {
+        // Abort current SEQ
+        mStatusAndControlRegs[PHY_CTRL1] &= ~(cPHY_CTRL1_XCVSEQ);
+        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
+        // wait for Sequence Idle (if not already)
+        while ((MCR20Drv_DirectAccessSPIRead(SEQ_STATE) & 0x1F) != 0);
+        // Clear IRQ flags:
+        MCR20Drv_DirectAccessSPIWrite(IRQSTS1, cIRQSTS1_SEQIRQ);
+        // Restart Rx asap
+        mStatusAndControlRegs[PHY_CTRL1] |= gRX_c;
+        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
+    }
 
     /* Sequencer interrupt, the autosequence has completed */
     if( (mStatusAndControlRegs[IRQSTS1] & cIRQSTS1_SEQIRQ) && 
@@ -1019,6 +1040,14 @@ static void rf_abort(void)
     mPhySeqState = gIdle_c;
 
     mStatusAndControlRegs[IRQSTS1] = MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[IRQSTS2], sizeof(mStatusAndControlRegs) - 1);
+    
+    /* Mask SEQ interrupt */
+    mStatusAndControlRegs[PHY_CTRL2] |= cPHY_CTRL2_SEQMSK;
+
+    /* Stop timers */
+    mStatusAndControlRegs[PHY_CTRL3] &= ~(cPHY_CTRL3_TMR2CMP_EN | cPHY_CTRL3_TMR3CMP_EN);
+    mStatusAndControlRegs[PHY_CTRL4] &= ~(cPHY_CTRL4_TC3TMOUT);
+    MCR20Drv_DirectAccessSPIMultiByteWrite(PHY_CTRL2, &mStatusAndControlRegs[PHY_CTRL2], 4);
 
     if( (mStatusAndControlRegs[PHY_CTRL1] & cPHY_CTRL1_XCVSEQ) != gIdle_c )
     {
@@ -1031,14 +1060,6 @@ static void rf_abort(void)
         //while ( !(MCR20Drv_DirectAccessSPIRead(IRQSTS1) & cIRQSTS1_SEQIRQ));
         mStatusAndControlRegs[IRQSTS1] |= cIRQSTS1_SEQIRQ;
     }
-
-    /* Mask SEQ interrupt */
-    mStatusAndControlRegs[PHY_CTRL2] |= cPHY_CTRL2_SEQMSK;
-
-    /* Stop timers */
-    mStatusAndControlRegs[PHY_CTRL3] &= ~(cPHY_CTRL3_TMR2CMP_EN | cPHY_CTRL3_TMR3CMP_EN);
-    mStatusAndControlRegs[PHY_CTRL4] &= ~(cPHY_CTRL4_TC3TMOUT);
-    MCR20Drv_DirectAccessSPIMultiByteWrite(PHY_CTRL2, &mStatusAndControlRegs[PHY_CTRL2], 4);
 
     /* Clear all PP IRQ bits to avoid unexpected interrupts and mask TMR3 interrupt.
        Do not change TMR IRQ status. */
