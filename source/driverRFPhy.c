@@ -673,6 +673,8 @@ void rf_handle_rx_end(void)
     {
         rf_lqi  = rf_convert_LQI(rf_lqi);
         rf_rssi = rf_convert_LQI_to_RSSI(rf_lqi);
+        /*gcararu: Scale LQI using received RSSI, to match the LQI reported by the ATMEL radio */
+        rf_lqi  = rf_scale_lqi(rf_rssi);
 
         /*Read received packet*/
         MCR20Drv_PB_SPIBurstRead(rf_buffer, len);
@@ -755,14 +757,16 @@ void rf_handle_cca_ed_done(void)
  */
 int8_t rf_tx_power_set(uint8_t power)
 {
-    /* -40 dBm to 16 dBm */
-    if((power < 3) || (power > 31))
+    /* gcapraru: Map MCR20A Tx power levels over ATMEL values */
+    static pwrLevelMapping[16] = {25,25,25,24,24,24,23,23,22,22,21,20,19,18,17,14};
+
+    if( power > 15 )
     {
-        return -1;;
+        return -1;
     }
 
     radio_tx_power = power;
-    MCR20Drv_DirectAccessSPIWrite(PA_PWR, power);
+    MCR20Drv_DirectAccessSPIWrite(PA_PWR, pwrLevelMapping[power]);
     return 0;
 }
 
@@ -1156,18 +1160,6 @@ static uint8_t rf_if_read_rnd(void)
 }
 
 /*
- * \brief Function converts RSSI into LQI.
- *
- * \param RSSI
- *
- * \return LQI
- */
-uint8_t rf_scale_lqi(int8_t rssi)
-{
-    return (rssi * 163 + 16820) / 50;
-}
-
-/*
  * \brief Function converts LQI into RSSI.
  *
  * \param LQI 
@@ -1302,4 +1294,52 @@ static void rf_set_power_state(xcvrPwrMode_t newState)
 
         MCR20Drv_DirectAccessSPIWrite(IRQSTS2, cIRQSTS2_WAKE_IRQ);
     }
+}
+
+uint8_t rf_scale_lqi(int8_t rssi)
+{
+    uint8_t scaled_lqi;
+    /*Worst case sensitivity*/
+    const int8_t rf_sensitivity = -98;
+
+    /*rssi < RF sensitivity*/
+    if(rssi < rf_sensitivity)
+        scaled_lqi=0;
+    /*-91 dBm < rssi < -81 dBm (AT86RF233 XPro)*/
+    /*-90 dBm < rssi < -80 dBm (AT86RF212B XPro)*/
+    else if(rssi < (rf_sensitivity + 10))
+        scaled_lqi=31;
+    /*-81 dBm < rssi < -71 dBm (AT86RF233 XPro)*/
+    /*-80 dBm < rssi < -70 dBm (AT86RF212B XPro)*/
+    else if(rssi < (rf_sensitivity + 20))
+        scaled_lqi=207;
+    /*-71 dBm < rssi < -61 dBm (AT86RF233 XPro)*/
+    /*-70 dBm < rssi < -60 dBm (AT86RF212B XPro)*/
+    else if(rssi < (rf_sensitivity + 30))
+        scaled_lqi=255;
+    /*-61 dBm < rssi < -51 dBm (AT86RF233 XPro)*/
+    /*-60 dBm < rssi < -50 dBm (AT86RF212B XPro)*/
+    else if(rssi < (rf_sensitivity + 40))
+        scaled_lqi=255;
+    /*-51 dBm < rssi < -41 dBm (AT86RF233 XPro)*/
+    /*-50 dBm < rssi < -40 dBm (AT86RF212B XPro)*/
+    else if(rssi < (rf_sensitivity + 50))
+        scaled_lqi=255;
+    /*-41 dBm < rssi < -31 dBm (AT86RF233 XPro)*/
+    /*-40 dBm < rssi < -30 dBm (AT86RF212B XPro)*/
+    else if(rssi < (rf_sensitivity + 60))
+        scaled_lqi=255;
+    /*-31 dBm < rssi < -21 dBm (AT86RF233 XPro)*/
+    /*-30 dBm < rssi < -20 dBm (AT86RF212B XPro)*/
+    else if(rssi < (rf_sensitivity + 70))
+        scaled_lqi=255;
+    /*rssi > RF saturation*/
+    else if(rssi > (rf_sensitivity + 80))
+        scaled_lqi=111;
+    /*-21 dBm < rssi < -11 dBm (AT86RF233 XPro)*/
+    /*-20 dBm < rssi < -10 dBm (AT86RF212B XPro)*/
+    else
+        scaled_lqi=255;
+
+    return scaled_lqi;
 }
