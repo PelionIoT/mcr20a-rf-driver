@@ -27,6 +27,8 @@
 #define gPhySHRDuration_c     10
 #define gPhySymbolsPerOctet_c  2
 #define gPhyAckWaitDuration_c 54
+
+#define gCcaED_c               0
 #define gCcaCCA_MODE1_c        1
 
 #define gXcvrRunState_d       gXcvrPwrAutodoze_c
@@ -84,6 +86,8 @@ static void    rf_set_timeout(uint32_t *pEndTime);
 static void    rf_set_power_state(xcvrPwrMode_t newState);
 static uint8_t rf_if_read_rnd(void);
 static uint8_t rf_convert_LQI(uint8_t hwLqi);
+static uint8_t rf_get_channel_energy(void);
+static uint8_t rf_convert_energy_level(uint8_t energyLevel);
 static int8_t  rf_convert_LQI_to_RSSI(uint8_t lqi);
 static int8_t  rf_interface_state_control(phy_interface_state_e new_state, uint8_t rf_channel);
 static int8_t  rf_extension(phy_extension_type_e extension_type,uint8_t *data_ptr);
@@ -347,9 +351,12 @@ void rf_set_address(uint8_t *address)
  */
 void rf_channel_set(uint8_t channel)
 {
-    rf_phy_channel = channel;
-    MCR20Drv_DirectAccessSPIWrite(PLL_INT0, pll_int[channel - 11]);
-    MCR20Drv_DirectAccessSPIMultiByteWrite(PLL_FRAC0_LSB, (uint8_t *) &pll_frac[channel - 11], 2);
+    if( rf_phy_channel != channel )
+    {
+        rf_phy_channel = channel;   
+        MCR20Drv_DirectAccessSPIWrite(PLL_INT0, pll_int[channel - 11]);
+        MCR20Drv_DirectAccessSPIMultiByteWrite(PLL_FRAC0_LSB, (uint8_t *) &pll_frac[channel - 11], 2);
+    }
 }
 
 
@@ -364,6 +371,7 @@ void rf_init(void)
 {
     uint32_t index;
 
+    rf_phy_channel = 11;
     mPhySeqState = gIdle_c;
     mPwrState = gXcvrPwrIdle_c;
     /*Reset RF module*/
@@ -376,40 +384,46 @@ void rf_init(void)
     MCR20Drv_Set_CLK_OUT_Freq(gMCR20_ClkOutFreq_d);
     /* Set default XCVR power state */
     rf_set_power_state(gXcvrRunState_d);
+
     /* PHY_CTRL1 default HW settings  + AUTOACK enabled */
-    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, cPHY_CTRL1_AUTOACK);
+    mStatusAndControlRegs[PHY_CTRL1] = cPHY_CTRL1_AUTOACK;
     /* PHY_CTRL2 : mask all PP interrupts */
-    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL2, (cPHY_CTRL2_CRC_MSK | \
-                                              cPHY_CTRL2_PLL_UNLOCK_MSK | \
-                                              /*cPHY_CTRL2_FILTERFAIL_MSK | */ \
-                                              cPHY_CTRL2_RX_WMRK_MSK | \
-                                              cPHY_CTRL2_CCAMSK | \
-                                              cPHY_CTRL2_RXMSK | \
-                                              cPHY_CTRL2_TXMSK | \
-                                              cPHY_CTRL2_SEQMSK));
+    mStatusAndControlRegs[PHY_CTRL2] = cPHY_CTRL2_CRC_MSK | \
+                                       cPHY_CTRL2_PLL_UNLOCK_MSK | \
+                                       /*cPHY_CTRL2_FILTERFAIL_MSK | */ \
+                                       cPHY_CTRL2_RX_WMRK_MSK | \
+                                       cPHY_CTRL2_CCAMSK | \
+                                       cPHY_CTRL2_RXMSK | \
+                                       cPHY_CTRL2_TXMSK | \
+                                       cPHY_CTRL2_SEQMSK;
     /* PHY_CTRL3 : enable all timers and disable remaining interrupts */
-    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL3, (cPHY_CTRL3_ASM_MSK    | \
-                                              cPHY_CTRL3_PB_ERR_MSK | \
-                                              cPHY_CTRL3_WAKE_MSK   | \
-                                              cPHY_CTRL3_TMR1CMP_EN | \
-                                              cPHY_CTRL3_TMR2CMP_EN | \
-                                              cPHY_CTRL3_TMR3CMP_EN | \
-                                              cPHY_CTRL3_TMR4CMP_EN));
-    /* Clear all PP IRQ bits to avoid unexpected interrupts immediately after initialization */
-    MCR20Drv_DirectAccessSPIWrite(IRQSTS1, (cIRQSTS1_PLL_UNLOCK_IRQ | \
-                                            cIRQSTS1_FILTERFAIL_IRQ | \
-                                            cIRQSTS1_RXWTRMRKIRQ | \
-                                            cIRQSTS1_CCAIRQ | \
-                                            cIRQSTS1_RXIRQ | \
-                                            cIRQSTS1_TXIRQ | \
-                                            cIRQSTS1_SEQIRQ));
-    
-    MCR20Drv_DirectAccessSPIWrite(IRQSTS2, (cIRQSTS2_ASM_IRQ | cIRQSTS2_PB_ERR_IRQ | cIRQSTS2_WAKE_IRQ));
-    /* Mask and clear all TMR IRQs */
-    MCR20Drv_DirectAccessSPIWrite(IRQSTS3, (cIRQSTS3_TMR4MSK | cIRQSTS3_TMR3MSK | cIRQSTS3_TMR2MSK | cIRQSTS3_TMR1MSK | \
-                                            cIRQSTS3_TMR4IRQ | cIRQSTS3_TMR3IRQ | cIRQSTS3_TMR2IRQ | cIRQSTS3_TMR1IRQ));
+    mStatusAndControlRegs[PHY_CTRL3] = cPHY_CTRL3_ASM_MSK    | \
+                                       cPHY_CTRL3_PB_ERR_MSK | \
+                                       cPHY_CTRL3_WAKE_MSK   | \
+                                       cPHY_CTRL3_TMR1CMP_EN | \
+                                       cPHY_CTRL3_TMR2CMP_EN | \
+                                       cPHY_CTRL3_TMR3CMP_EN | \
+                                       cPHY_CTRL3_TMR4CMP_EN;
     /* PHY_CTRL4 unmask global TRX interrupts, enable 16 bit mode for TC2 - TC2 prime EN */
-    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL4, cPHY_CTRL4_TC2PRIME_EN | (gCcaCCA_MODE1_c << cPHY_CTRL4_CCATYPE_Shift_c));
+    mStatusAndControlRegs[PHY_CTRL4] = cPHY_CTRL4_TC2PRIME_EN | (gCcaCCA_MODE1_c << cPHY_CTRL4_CCATYPE_Shift_c);
+    /* Clear all PP IRQ bits to avoid unexpected interrupts immediately after initialization */
+    mStatusAndControlRegs[IRQSTS1] = cIRQSTS1_PLL_UNLOCK_IRQ | \
+                                     cIRQSTS1_FILTERFAIL_IRQ | \
+                                     cIRQSTS1_RXWTRMRKIRQ | \
+                                     cIRQSTS1_CCAIRQ | \
+                                     cIRQSTS1_RXIRQ | \
+                                     cIRQSTS1_TXIRQ | \
+                                     cIRQSTS1_SEQIRQ;
+    
+    mStatusAndControlRegs[IRQSTS2] = cIRQSTS2_ASM_IRQ | cIRQSTS2_PB_ERR_IRQ | cIRQSTS2_WAKE_IRQ;
+    /* Mask and clear all TMR IRQs */
+    mStatusAndControlRegs[IRQSTS3] = cIRQSTS3_TMR4MSK | cIRQSTS3_TMR3MSK | cIRQSTS3_TMR2MSK | cIRQSTS3_TMR1MSK | \
+                                     cIRQSTS3_TMR4IRQ | cIRQSTS3_TMR3IRQ | cIRQSTS3_TMR2IRQ | cIRQSTS3_TMR1IRQ;
+    /* Write settings to XCVR */
+    MCR20Drv_DirectAccessSPIMultiByteWrite(PHY_CTRL1, &mStatusAndControlRegs[PHY_CTRL1], 5);
+    /* Clear all interrupts */
+    MCR20Drv_DirectAccessSPIMultiByteWrite(IRQSTS1, &mStatusAndControlRegs[IRQSTS1], 3);
+    
     /*  RX_FRAME_FILTER. Accept FrameVersion 0 and 1 packets, reject all others */
     MCR20Drv_IndirectAccessSPIWrite(RX_FRAME_FILTER, (cRX_FRAME_FLT_FRM_VER | \
                                                       cRX_FRAME_FLT_BEACON_FT | \
@@ -473,7 +487,7 @@ void rf_poll_trx_state_change(rf_trx_states_t trx_state)
  */
 int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, data_protocol_e data_protocol )
 {
-    uint8_t phyRegs[5];
+    uint8_t ccaMode;
     
     /* Parameter validation */
     if( !data_ptr || (data_length > 125) || (PHY_LAYER_PAYLOAD != data_protocol) )
@@ -511,23 +525,32 @@ int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, 
     MCR20Drv_PB_SPIBurstWrite(data_ptr - 1, data_length + 1);
     MCR20Drv_PB_SPIByteWrite(0,tx_len);
     
+    /* Set CCA mode 1 */
+    ccaMode = (mStatusAndControlRegs[PHY_CTRL4] >> cPHY_CTRL4_CCATYPE_Shift_c) & cPHY_CTRL4_CCATYPE;
+    if( ccaMode != gCcaCCA_MODE1_c )
+    {
+        mStatusAndControlRegs[PHY_CTRL4] &= ~(cPHY_CTRL4_CCATYPE << cPHY_CTRL4_CCATYPE_Shift_c);
+        mStatusAndControlRegs[PHY_CTRL4] |= gCcaCCA_MODE1_c << cPHY_CTRL4_CCATYPE_Shift_c;
+        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL4, mStatusAndControlRegs[PHY_CTRL4]);
+    }
+
     /* Read XCVR registers */
-    phyRegs[0] = MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &phyRegs[1], 4);
-    phyRegs[PHY_CTRL1] &= ~(cPHY_CTRL1_XCVSEQ);
-    phyRegs[PHY_CTRL1] |= gCCA_c;
+    mStatusAndControlRegs[0] = MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[1], 4);
+    mStatusAndControlRegs[PHY_CTRL1] &= ~(cPHY_CTRL1_XCVSEQ);
+    mStatusAndControlRegs[PHY_CTRL1] |= gCCA_c;
     mPhySeqState = gCCA_c;
 
     /* Ensure that no spurious interrupts are raised */
-    phyRegs[IRQSTS3] &= 0xF0; /* do not change other IRQ status */
-    phyRegs[IRQSTS3] |= (cIRQSTS3_TMR3MSK | cIRQSTS3_TMR2IRQ | cIRQSTS3_TMR3IRQ);
-    MCR20Drv_DirectAccessSPIMultiByteWrite(IRQSTS1, phyRegs, 3);
+    mStatusAndControlRegs[IRQSTS3] &= 0xF0; /* do not change other IRQ status */
+    mStatusAndControlRegs[IRQSTS3] |= (cIRQSTS3_TMR3MSK | cIRQSTS3_TMR2IRQ | cIRQSTS3_TMR3IRQ);
+    MCR20Drv_DirectAccessSPIMultiByteWrite(IRQSTS1, mStatusAndControlRegs, 3);
 
     /* Write XCVR settings */
-    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, phyRegs[PHY_CTRL1]);
+    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
     
     /* Unmask SEQ interrupt */
-    phyRegs[PHY_CTRL2] &= ~(cPHY_CTRL2_SEQMSK);
-    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL2, phyRegs[PHY_CTRL2]);
+    mStatusAndControlRegs[PHY_CTRL2] &= ~(cPHY_CTRL2_SEQMSK);
+    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL2, mStatusAndControlRegs[PHY_CTRL2]);
 
     /*Return success*/
     return 0;
@@ -758,7 +781,7 @@ void rf_handle_cca_ed_done(void)
 int8_t rf_tx_power_set(uint8_t power)
 {
     /* gcapraru: Map MCR20A Tx power levels over ATMEL values */
-    static pwrLevelMapping[16] = {25,25,25,24,24,24,23,23,22,22,21,20,19,18,17,14};
+    static uint8_t pwrLevelMapping[16] = {25,25,25,24,24,24,23,23,22,22,21,20,19,18,17,14};
 
     if( power > 15 )
     {
@@ -831,6 +854,8 @@ static int8_t rf_interface_state_control(phy_interface_state_e new_state, uint8_
             break;
         /*Enable wireless interface ED scan mode*/
         case PHY_INTERFACE_RX_ENERGY_STATE:
+            rf_abort();
+            rf_channel_set(rf_channel);
             break;
         case PHY_INTERFACE_SNIFFER_STATE:             /**< Enable Sniffer state */
             rf_promiscuous(1);
@@ -880,6 +905,7 @@ static int8_t rf_extension(phy_extension_type_e extension_type, uint8_t *data_pt
             break;
         /*Read energy on the channel*/
         case PHY_EXTENSION_READ_CHANNEL_ENERGY:
+            *data_ptr = rf_get_channel_energy();
             break;
         /*Read status of the link*/
         case PHY_EXTENSION_READ_LINK_STATUS:
@@ -1294,6 +1320,84 @@ static void rf_set_power_state(xcvrPwrMode_t newState)
 
         MCR20Drv_DirectAccessSPIWrite(IRQSTS2, cIRQSTS2_WAKE_IRQ);
     }
+}
+
+/*
+ * \brief Function reads the energy level on the preselected channel.
+ *
+ * \return energy level
+ */
+static uint8_t rf_get_channel_energy(void)
+{
+    uint8_t ccaMode;
+
+    MCR20Drv_IRQ_Disable();
+    /* RX can start only from Idle state */
+    if( mPhySeqState != gIdle_c )
+    {
+        MCR20Drv_IRQ_Enable();
+        return 0;
+    }
+
+    /* Set XCVR power state in run mode */
+    rf_set_power_state(gXcvrRunState_d);
+
+    /* Switch to ED mode */
+    ccaMode = (mStatusAndControlRegs[PHY_CTRL4] >> cPHY_CTRL4_CCATYPE_Shift_c) & cPHY_CTRL4_CCATYPE;
+    if( ccaMode != gCcaED_c )
+    {
+        mStatusAndControlRegs[PHY_CTRL4] &= ~(cPHY_CTRL4_CCATYPE << cPHY_CTRL4_CCATYPE_Shift_c);
+        mStatusAndControlRegs[PHY_CTRL4] |= gCcaED_c << cPHY_CTRL4_CCATYPE_Shift_c;
+        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL4, mStatusAndControlRegs[PHY_CTRL4]);
+    }
+    
+    /* Start ED sequence */
+    mStatusAndControlRegs[PHY_CTRL1] |= gCCA_c;
+    MCR20Drv_DirectAccessSPIWrite(IRQSTS1, cIRQSTS1_CCAIRQ | cIRQSTS1_SEQIRQ);
+    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
+    /* Wait for sequence to finish */
+    while ( !(MCR20Drv_DirectAccessSPIRead(IRQSTS1) & cIRQSTS1_SEQIRQ));
+    /* Set XCVR to Idle */
+    mStatusAndControlRegs[PHY_CTRL1] &= ~(cPHY_CTRL1_XCVSEQ);
+    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
+    MCR20Drv_DirectAccessSPIWrite(IRQSTS1, cIRQSTS1_CCAIRQ | cIRQSTS1_SEQIRQ);
+    
+    MCR20Drv_IRQ_Enable();
+    
+    return rf_convert_energy_level(MCR20Drv_DirectAccessSPIRead(CCA1_ED_FNL));
+}
+
+/*
+ * \brief Function converts the energy level from dBm to a 0-255 value.
+ *
+ * \param energyLevel in dBm
+ *
+ * \return energy level (0-255)
+ */
+static uint8_t rf_convert_energy_level(uint8_t energyLevel)
+{
+    if(energyLevel >= 90)
+    {
+        /* ED value is below minimum. Return 0x00. */
+        energyLevel = 0x00;
+    }
+    else if(energyLevel <= 26)
+    {
+        /* ED value is above maximum. Return 0xFF. */
+        energyLevel = 0xFF;
+    }
+    else
+    {
+        /* Energy level (-90 dBm to -26 dBm ) --> varies form 0 to 64 */
+        energyLevel = (90 - energyLevel);
+        /* Rescale the energy level values to the 0x00-0xff range (0 to 64 translates in 0 to 255) */
+        /* energyLevel * 3.9844 ~= 4 */
+        /* Multiply with 4=2^2 by shifting left.
+        The multiplication will not overflow beacause energyLevel has values between 0 and 63 */
+        energyLevel <<= 2;
+    }
+
+    return energyLevel;
 }
 
 uint8_t rf_scale_lqi(int8_t rssi)
