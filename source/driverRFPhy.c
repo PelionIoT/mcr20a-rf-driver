@@ -501,6 +501,7 @@ int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, 
         /* Check for an Rx in progress. */
         if((phyReg <= 0x06) || (phyReg == 0x15) || (phyReg == 0x16))
         {
+            arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_CCA_FAIL, 1, 1);
             return -1;
         }
         rf_abort();
@@ -981,7 +982,8 @@ void PHY_InterruptHandler(void)
     
     /* Flter Fail IRQ */
     if( (mStatusAndControlRegs[IRQSTS1] & cIRQSTS1_FILTERFAIL_IRQ) &&
-       !(mStatusAndControlRegs[PHY_CTRL2] & cPHY_CTRL2_FILTERFAIL_MSK) )
+       !(mStatusAndControlRegs[PHY_CTRL2] & cPHY_CTRL2_FILTERFAIL_MSK) &&
+        (xcvseqCopy == gRX_c))
     {
         // Abort current SEQ
         mStatusAndControlRegs[PHY_CTRL1] &= ~(cPHY_CTRL1_XCVSEQ);
