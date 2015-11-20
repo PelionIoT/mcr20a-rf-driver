@@ -179,6 +179,8 @@ int8_t rf_read_random(void)
  */
 void rf_ack_wait_timer_interrupt(void)
 {
+    /* The packet was transmitted successfully, but no ACK was received */
+    arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_SUCCESS, 1, 1);
     rf_receive();
 }
 
@@ -306,6 +308,7 @@ void rf_write_settings(void)
  */
 void rf_set_short_adr(uint8_t * short_address)
 {
+    /* Write one register at a time to be accessible from hibernate mode */
     MCR20Drv_IndirectAccessSPIWrite(MACSHORTADDRS0_MSB, short_address[0]);
     MCR20Drv_IndirectAccessSPIWrite(MACSHORTADDRS0_LSB, short_address[1]);
 }
@@ -319,6 +322,7 @@ void rf_set_short_adr(uint8_t * short_address)
  */
 void rf_set_pan_id(uint8_t *pan_id)
 {
+    /* Write one register at a time to be accessible from hibernate mode */
     MCR20Drv_IndirectAccessSPIWrite(MACPANID0_MSB, pan_id[0]);
     MCR20Drv_IndirectAccessSPIWrite(MACPANID0_LSB, pan_id[1]);
 }
@@ -332,6 +336,7 @@ void rf_set_pan_id(uint8_t *pan_id)
  */
 void rf_set_address(uint8_t *address)
 {
+    /* Write one register at a time to be accessible from hibernate mode */
     MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_0,  address[7]);
     MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_8,  address[6]);
     MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_16, address[5]);
@@ -396,14 +401,11 @@ void rf_init(void)
                                        cPHY_CTRL2_RXMSK | \
                                        cPHY_CTRL2_TXMSK | \
                                        cPHY_CTRL2_SEQMSK;
-    /* PHY_CTRL3 : enable all timers and disable remaining interrupts */
+    /* PHY_CTRL3 : enable timer 3 and disable remaining interrupts */
     mStatusAndControlRegs[PHY_CTRL3] = cPHY_CTRL3_ASM_MSK    | \
                                        cPHY_CTRL3_PB_ERR_MSK | \
                                        cPHY_CTRL3_WAKE_MSK   | \
-                                       cPHY_CTRL3_TMR1CMP_EN | \
-                                       cPHY_CTRL3_TMR2CMP_EN | \
-                                       cPHY_CTRL3_TMR3CMP_EN | \
-                                       cPHY_CTRL3_TMR4CMP_EN;
+                                       cPHY_CTRL3_TMR3CMP_EN;
     /* PHY_CTRL4 unmask global TRX interrupts, enable 16 bit mode for TC2 - TC2 prime EN */
     mStatusAndControlRegs[PHY_CTRL4] = cPHY_CTRL4_TC2PRIME_EN | (gCcaCCA_MODE1_c << cPHY_CTRL4_CCATYPE_Shift_c);
     /* Clear all PP IRQ bits to avoid unexpected interrupts immediately after initialization */
@@ -543,7 +545,7 @@ int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, 
 
     /* Ensure that no spurious interrupts are raised */
     mStatusAndControlRegs[IRQSTS3] &= 0xF0; /* do not change other IRQ status */
-    mStatusAndControlRegs[IRQSTS3] |= (cIRQSTS3_TMR3MSK | cIRQSTS3_TMR2IRQ | cIRQSTS3_TMR3IRQ);
+    mStatusAndControlRegs[IRQSTS3] |= (cIRQSTS3_TMR3MSK | cIRQSTS3_TMR3IRQ);
     MCR20Drv_DirectAccessSPIMultiByteWrite(IRQSTS1, mStatusAndControlRegs, 3);
 
     /* Write XCVR settings */
@@ -581,12 +583,12 @@ void rf_start_tx(void)
     /* Perform TxRxAck sequence if required by phyTxMode */
     if( need_ack )
     {
-        mStatusAndControlRegs[PHY_CTRL1] |= (uint8_t) (cPHY_CTRL1_RXACKRQD);
+        mStatusAndControlRegs[PHY_CTRL1] |= cPHY_CTRL1_RXACKRQD;
         mPhySeqState = gTR_c;
     }
     else
     {
-        mStatusAndControlRegs[PHY_CTRL1] &= (uint8_t) ~(cPHY_CTRL1_RXACKRQD);
+        mStatusAndControlRegs[PHY_CTRL1] &= ~(cPHY_CTRL1_RXACKRQD);
         mPhySeqState = gTX_c;
     }
 
@@ -728,13 +730,15 @@ void rf_shutdown(void)
  */
 void rf_handle_tx_end(void)
 {
+    uint8_t rx_frame_pending = mStatusAndControlRegs[IRQSTS1] & cIRQSTS1_RX_FRM_PEND;
+
     /*Start receiver*/
     rf_receive();
 
     /*Call PHY TX Done API*/
     if( need_ack )
     {
-        if( mStatusAndControlRegs[IRQSTS1] & cIRQSTS1_RX_FRM_PEND )
+        if( rx_frame_pending )
         {
             arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_DONE_PENDING, 1, 1);
         }
@@ -978,23 +982,49 @@ void PHY_InterruptHandler(void)
     /* Read transceiver interrupt status and control registers */
     mStatusAndControlRegs[IRQSTS1] =
         MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[IRQSTS2], 7);
+
     xcvseqCopy = mStatusAndControlRegs[PHY_CTRL1] & cPHY_CTRL1_XCVSEQ;
     
     /* Flter Fail IRQ */
     if( (mStatusAndControlRegs[IRQSTS1] & cIRQSTS1_FILTERFAIL_IRQ) &&
-       !(mStatusAndControlRegs[PHY_CTRL2] & cPHY_CTRL2_FILTERFAIL_MSK) &&
-        (xcvseqCopy == gRX_c))
+       !(mStatusAndControlRegs[PHY_CTRL2] & cPHY_CTRL2_FILTERFAIL_MSK) )
     {
-        // Abort current SEQ
-        mStatusAndControlRegs[PHY_CTRL1] &= ~(cPHY_CTRL1_XCVSEQ);
-        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
-        // wait for Sequence Idle (if not already)
-        while ((MCR20Drv_DirectAccessSPIRead(SEQ_STATE) & 0x1F) != 0);
-        // Clear IRQ flags:
-        MCR20Drv_DirectAccessSPIWrite(IRQSTS1, cIRQSTS1_SEQIRQ);
-        // Restart Rx asap
-        mStatusAndControlRegs[PHY_CTRL1] |= gRX_c;
-        MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
+        if( xcvseqCopy == gRX_c )
+        {
+            /* Abort current SEQ */
+            mStatusAndControlRegs[PHY_CTRL1] &= ~(cPHY_CTRL1_XCVSEQ);
+            MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
+            /* Wait for Sequence Idle */
+            while ((MCR20Drv_DirectAccessSPIRead(SEQ_STATE) & 0x1F) != 0);
+            /* Clear IRQ flags: */
+            MCR20Drv_DirectAccessSPIWrite(IRQSTS1, cIRQSTS1_SEQIRQ);
+            /* Restart Rx asap */
+            mStatusAndControlRegs[PHY_CTRL1] |= gRX_c;
+            MCR20Drv_DirectAccessSPIWrite(PHY_CTRL1, mStatusAndControlRegs[PHY_CTRL1]);
+        }
+    }
+    
+    /* TMR3 IRQ: ACK wait time-out */
+    if( (mStatusAndControlRegs[IRQSTS3] & cIRQSTS3_TMR3IRQ) &&
+       !(mStatusAndControlRegs[IRQSTS3] & cIRQSTS3_TMR3MSK) )
+    {
+        /* Disable TMR3 IRQ */
+        mStatusAndControlRegs[IRQSTS3] |= cIRQSTS3_TMR3MSK;
+
+        if( xcvseqCopy == gTR_c )
+        {
+            /* Set XCVR to Idle */
+            mPhySeqState = gIdle_c;
+            mStatusAndControlRegs[PHY_CTRL1] &=  ~( cPHY_CTRL1_XCVSEQ );
+            /* Mask interrupts */
+            mStatusAndControlRegs[PHY_CTRL2] |= cPHY_CTRL2_CCAMSK | cPHY_CTRL2_RXMSK | cPHY_CTRL2_TXMSK | cPHY_CTRL2_SEQMSK;
+            /* Sync settings with XCVR */
+            MCR20Drv_DirectAccessSPIMultiByteWrite(IRQSTS1, mStatusAndControlRegs, 5);
+            
+            rf_ack_wait_timer_interrupt();
+            MCR20Drv_IRQ_Enable();
+            return;
+        }
     }
 
     /* Sequencer interrupt, the autosequence has completed */
@@ -1016,16 +1046,6 @@ void PHY_InterruptHandler(void)
             {
                 rf_receive();
             }
-            MCR20Drv_IRQ_Enable();
-            return;
-        }
-        
-        /* TMR3 timeout, the autosequence has been aborted due to TMR3 timeout */
-        if( (mStatusAndControlRegs[IRQSTS3] & cIRQSTS3_TMR3IRQ) &&
-           !(mStatusAndControlRegs[IRQSTS1] & cIRQSTS1_RXIRQ) &&
-            (xcvseqCopy == gTR_c) )
-        {
-            rf_ack_wait_timer_interrupt();
             MCR20Drv_IRQ_Enable();
             return;
         }
@@ -1071,15 +1091,11 @@ static void rf_abort(void)
 
     mPhySeqState = gIdle_c;
 
-    mStatusAndControlRegs[IRQSTS1] = MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[IRQSTS2], sizeof(mStatusAndControlRegs) - 1);
+    mStatusAndControlRegs[IRQSTS1] = MCR20Drv_DirectAccessSPIMultiByteRead(IRQSTS2, &mStatusAndControlRegs[IRQSTS2], 5);
     
     /* Mask SEQ interrupt */
     mStatusAndControlRegs[PHY_CTRL2] |= cPHY_CTRL2_SEQMSK;
-
-    /* Stop timers */
-    mStatusAndControlRegs[PHY_CTRL3] &= ~(cPHY_CTRL3_TMR2CMP_EN | cPHY_CTRL3_TMR3CMP_EN);
-    mStatusAndControlRegs[PHY_CTRL4] &= ~(cPHY_CTRL4_TC3TMOUT);
-    MCR20Drv_DirectAccessSPIMultiByteWrite(PHY_CTRL2, &mStatusAndControlRegs[PHY_CTRL2], 4);
+    MCR20Drv_DirectAccessSPIWrite(PHY_CTRL2, mStatusAndControlRegs[PHY_CTRL2]);
 
     if( (mStatusAndControlRegs[PHY_CTRL1] & cPHY_CTRL1_XCVSEQ) != gIdle_c )
     {
@@ -1096,7 +1112,7 @@ static void rf_abort(void)
     /* Clear all PP IRQ bits to avoid unexpected interrupts and mask TMR3 interrupt.
        Do not change TMR IRQ status. */
     mStatusAndControlRegs[IRQSTS3] &= 0xF0;
-    mStatusAndControlRegs[IRQSTS3] |= (cIRQSTS3_TMR3MSK | cIRQSTS3_TMR2MSK | cIRQSTS3_TMR2IRQ | cIRQSTS3_TMR3IRQ);
+    mStatusAndControlRegs[IRQSTS3] |= (cIRQSTS3_TMR3MSK | cIRQSTS3_TMR3IRQ);
     MCR20Drv_DirectAccessSPIMultiByteWrite(IRQSTS1, mStatusAndControlRegs, 3);
 
     /* Unmask XCVR irq */
@@ -1146,13 +1162,13 @@ static void rf_set_timeout(uint32_t *pEndTime)
     phyReg = MCR20Drv_DirectAccessSPIRead(IRQSTS3);
     phyReg &= 0xF0;                    /* do not change IRQ status */
     phyReg |= (cIRQSTS3_TMR3MSK);      /* mask TMR3 interrupt */
-    MCR20Drv_DirectAccessSPIWrite( (uint8_t) IRQSTS3, phyReg);
+    MCR20Drv_DirectAccessSPIWrite(IRQSTS3, phyReg);
     
-    MCR20Drv_DirectAccessSPIMultiByteWrite( (uint8_t) T3CMP_LSB, (uint8_t *) pEndTime, 3);
+    MCR20Drv_DirectAccessSPIMultiByteWrite(T3CMP_LSB, (uint8_t *) pEndTime, 3);
     
     phyReg &= ~(cIRQSTS3_TMR3MSK);      /* unmask TMR3 interrupt */
     phyReg |= (cIRQSTS3_TMR3IRQ);       /* aknowledge TMR3 IRQ */
-    MCR20Drv_DirectAccessSPIWrite( (uint8_t) IRQSTS3, phyReg);
+    MCR20Drv_DirectAccessSPIWrite(IRQSTS3, phyReg);
     
     platform_exit_critical();
 }
