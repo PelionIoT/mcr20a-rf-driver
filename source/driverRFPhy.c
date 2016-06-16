@@ -74,8 +74,15 @@ static uint8_t MAC_address[8] = {1, 2, 3, 4, 5, 6, 7, 8};
 /* Channel info */                 /* 2405    2410    2415    2420    2425    2430    2435    2440    2445    2450    2455    2460    2465    2470    2475    2480 */
 static const uint8_t  pll_int[16] =  {0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0D,   0x0D,   0x0D,   0x0D};
 static const uint16_t pll_frac[16] = {0x2800, 0x5000, 0x7800, 0xA000, 0xC800, 0xF000, 0x1800, 0x4000, 0x6800, 0x9000, 0xB800, 0xE000, 0x0800, 0x3000, 0x5800, 0x8000};
-static phy_device_channel_info_s channel_info;
-static uint8_t rf_phy_channel = 11;
+static uint8_t rf_phy_channel = 0;
+
+/* Channel configurations for 2.4 */
+static const phy_rf_channel_configuration_s phy_24ghz = {2405000000, 5000000, 250000, 16, M_OQPSK};
+
+static const phy_device_channel_page_s phy_channel_pages[] = {
+        { CHANNEL_PAGE_0, &phy_24ghz},
+        { CHANNEL_PAGE_0, NULL}
+};
 
 
 /* Private functions */
@@ -92,6 +99,7 @@ static int8_t  rf_convert_LQI_to_RSSI(uint8_t lqi);
 static int8_t  rf_interface_state_control(phy_interface_state_e new_state, uint8_t rf_channel);
 static int8_t  rf_extension(phy_extension_type_e extension_type,uint8_t *data_ptr);
 static int8_t  rf_address_write(phy_address_type_e address_type,uint8_t *address_ptr);
+static void rf_mac64_read(uint8_t *address);
 
 
 
@@ -120,6 +128,8 @@ int8_t rf_device_register(void)
 
     rf_init();
 
+
+
     radio_type = rf_radio_type_read();
     if(radio_type == FREESCALE_MCR20A)
     {
@@ -128,15 +138,10 @@ int8_t rf_device_register(void)
         device_driver.driver_description = "FREESCALE_MAC";
 
         //Create setup Used Radio chips
-
-        /*Number of channels in PHY*/
-        channel_info.channel_count = 16;
-        /*Channel mask 26-11*/
-        channel_info.channel_mask = 0x07FFF800;
         /*Type of RF PHY is SubGHz*/
         device_driver.link_type = PHY_LINK_15_4_2_4GHZ_TYPE;
 
-        device_driver.link_channel_info = &channel_info;
+        device_driver.phy_channel_pages = phy_channel_pages;
         /*Maximum size of payload is 127*/
         device_driver.phy_MTU = 127;
         /*No header in PHY*/
@@ -151,6 +156,13 @@ int8_t rf_device_register(void)
         device_driver.state_control = &rf_interface_state_control;
         /*Set transmit function*/
         device_driver.tx = &rf_start_cca;
+        /*Upper layer callbacks init to NULL*/
+        device_driver.phy_rx_cb = NULL;
+        device_driver.phy_tx_done_cb = NULL;
+        /*Virtual upper data callback init to NULL*/
+        device_driver.arm_net_virtual_rx_cb = NULL;
+        device_driver.arm_net_virtual_tx_cb = NULL;
+
         /*Register device driver*/
         rf_radio_driver_id = arm_net_phy_register(&device_driver);
     }
@@ -180,7 +192,9 @@ int8_t rf_read_random(void)
 void rf_ack_wait_timer_interrupt(void)
 {
     /* The packet was transmitted successfully, but no ACK was received */
-    arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_SUCCESS, 1, 1);
+    if (device_driver.phy_tx_done_cb) {
+        device_driver.phy_tx_done_cb(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_SUCCESS, 1, 1);
+    }
     rf_receive();
 }
 
@@ -356,12 +370,9 @@ void rf_set_address(uint8_t *address)
  */
 void rf_channel_set(uint8_t channel)
 {
-    if( rf_phy_channel != channel )
-    {
-        rf_phy_channel = channel;   
-        MCR20Drv_DirectAccessSPIWrite(PLL_INT0, pll_int[channel - 11]);
-        MCR20Drv_DirectAccessSPIMultiByteWrite(PLL_FRAC0_LSB, (uint8_t *) &pll_frac[channel - 11], 2);
-    }
+    rf_phy_channel = channel;
+    MCR20Drv_DirectAccessSPIWrite(PLL_INT0, pll_int[channel - 11]);
+    MCR20Drv_DirectAccessSPIMultiByteWrite(PLL_FRAC0_LSB, (uint8_t *) &pll_frac[channel - 11], 2);
 }
 
 
@@ -375,8 +386,6 @@ void rf_channel_set(uint8_t channel)
 void rf_init(void)
 {
     uint32_t index;
-
-    rf_phy_channel = 11;
     mPhySeqState = gIdle_c;
     mPwrState = gXcvrPwrIdle_c;
     /*Reset RF module*/
@@ -447,6 +456,10 @@ void rf_init(void)
 
     /*Read random variable. This will be used when seeding pseudo-random generator*/
     rf_rnd = rf_if_read_rnd();
+    /*Read eui64*/
+    rf_mac64_read(MAC_address);
+    /*set default channel to 11*/
+    rf_channel_set(11);
     /*Start receiver*/
     rf_receive();
 }
@@ -490,7 +503,7 @@ void rf_poll_trx_state_change(rf_trx_states_t trx_state)
 int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, data_protocol_e data_protocol )
 {
     uint8_t ccaMode;
-    
+
     /* Parameter validation */
     if( !data_ptr || (data_length > 125) || (PHY_LAYER_PAYLOAD != data_protocol) )
     {
@@ -503,7 +516,9 @@ int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, 
         /* Check for an Rx in progress. */
         if((phyReg <= 0x06) || (phyReg == 0x15) || (phyReg == 0x16))
         {
-            arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_CCA_FAIL, 1, 1);
+            if (device_driver.phy_tx_done_cb) {
+                device_driver.phy_tx_done_cb(rf_radio_driver_id, mac_tx_handle, PHY_LINK_CCA_FAIL, 1, 1);
+            }
             return -1;
         }
         rf_abort();
@@ -704,7 +719,9 @@ void rf_handle_rx_end(void)
 
         /*Read received packet*/
         MCR20Drv_PB_SPIBurstRead(rf_buffer, len);
-        arm_net_phy_rx(PHY_LAYER_PAYLOAD, rf_buffer, len, rf_lqi, rf_rssi, rf_radio_driver_id);
+        if (device_driver.phy_rx_cb) {
+            device_driver.phy_rx_cb(rf_buffer, len, rf_lqi, rf_rssi, rf_radio_driver_id);
+        }
     }
 }
 
@@ -735,22 +752,26 @@ void rf_handle_tx_end(void)
     /*Start receiver*/
     rf_receive();
 
+    if (!device_driver.phy_tx_done_cb) {
+        return;
+    }
+
     /*Call PHY TX Done API*/
     if( need_ack )
     {
         if( rx_frame_pending )
         {
-            arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_DONE_PENDING, 1, 1);
+            device_driver.phy_tx_done_cb(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_DONE_PENDING, 1, 1);
         }
         else
         {
             // arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_SUCCESS, 1, 1);
-            arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_DONE, 1, 1);
+            device_driver.phy_tx_done_cb(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_DONE, 1, 1);
         }
     }
     else
     {
-        arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_SUCCESS, 1, 1);
+        device_driver.phy_tx_done_cb(rf_radio_driver_id, mac_tx_handle, PHY_LINK_TX_SUCCESS, 1, 1);
     }
 }
 
@@ -768,10 +789,10 @@ void rf_handle_cca_ed_done(void)
     {
         rf_start_tx();
     }
-    else
+    else if (device_driver.phy_tx_done_cb)
     {
         /*Send CCA fail notification*/
-        arm_net_phy_tx_done(rf_radio_driver_id, mac_tx_handle, PHY_LINK_CCA_FAIL, 1, 1);
+        device_driver.phy_tx_done_cb(rf_radio_driver_id, mac_tx_handle, PHY_LINK_CCA_FAIL, 1, 1);
     }
 }
 
@@ -951,6 +972,20 @@ static int8_t rf_address_write(phy_address_type_e address_type, uint8_t *address
             break;
     }
     return ret_val;
+}
+
+static void rf_mac64_read(uint8_t *address)
+{
+    /* Write one register at a time to be accessible from hibernate mode */
+    address[7] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_0);
+    address[6] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_8);
+    address[5] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_16);
+    address[4] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_24);
+    address[3] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_32);
+    address[2] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_40);
+    address[1] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_48);
+    address[0] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_56);
+
 }
 
 /*
