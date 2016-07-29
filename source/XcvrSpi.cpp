@@ -40,7 +40,11 @@
 *---------------------------------------------------------------------------*
 *****************************************************************************/
 
+#ifdef YOTTA_CFG
 #include "mbed-drivers/mbed.h"
+#else
+#include "mbed.h"
+#endif
 
 #if defined(TARGET_K64F)
   SPI spi(PTD2, PTD3, PTD1);
