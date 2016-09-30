@@ -13,14 +13,35 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "NanostackRfPhyMcr20a.h"
 #include "ns_types.h"
 #include "platform/arm_hal_interrupt.h"
 #include "nanostack/platform/arm_hal_phy.h"
-#include "mcr20a-rf-driver/driverRFPhy.h"
+#include "toolchain.h"
+#include <string.h>
+
+/* Freescale headers which are for C files */
+extern "C" {
 #include "MCR20Drv.h"
 #include "MCR20Reg.h"
 #include "MCR20Overwrites.h"
-#include <string.h>
+}
+
+
+#define RF_BUFFER_SIZE 128
+
+/*Radio RX and TX state definitions*/
+#define RFF_ON 0x01
+#define RFF_RX 0x02
+#define RFF_TX 0x04
+#define RFF_CCA 0x08
+
+#define RF_MODE_NORMAL  0
+#define RF_MODE_SNIFFER 1
+
+#define RF_CCA_THRESHOLD 75 /* -75 dBm */
+
+#define RF_TX_POWER_MAX 0
 
 /* PHY constants in symbols */
 #define gPhyWarmUpTime_c       9
@@ -53,6 +74,31 @@ typedef enum xcvrPwrMode_tag{
     gXcvrPwrHibernate_c
 }xcvrPwrMode_t;
 
+
+/*RF Part Type*/
+typedef enum
+{
+    FREESCALE_UNKNOW_DEV = 0,
+    FREESCALE_MCR20A
+}rf_trx_part_e;
+
+/*Atmel RF states*/
+typedef enum
+{
+    NOP = 0x00,
+    BUSY_RX = 0x01,
+    RF_TX_START = 0x02,
+    FORCE_TRX_OFF = 0x03,
+    FORCE_PLL_ON = 0x04,
+    RX_ON = 0x06,
+    TRX_OFF = 0x08,
+    PLL_ON = 0x09,
+    BUSY_RX_AACK = 0x11,
+    SLEEP = 0x0F,
+    RX_AACK_ON = 0x16,
+    TX_ARET_ON = 0x19
+}rf_trx_states_t;
+
 /*RF receive buffer*/
 static uint8_t rf_buffer[RF_BUFFER_SIZE];
 
@@ -71,13 +117,21 @@ static uint8_t rf_rnd = 0;
 static int8_t  rf_radio_driver_id = -1;
 static uint8_t MAC_address[8] = {1, 2, 3, 4, 5, 6, 7, 8};
 
+/* Driver instance handle and hardware */
+static NanostackRfPhyMcr20a *rf = NULL;
+static SPI *spi = NULL;
+static DigitalOut *cs = NULL;
+static DigitalOut *rst = NULL;
+static InterruptIn *irq = NULL;
+static DigitalIn *irq_pin = NULL;
+
 /* Channel info */                 /* 2405    2410    2415    2420    2425    2430    2435    2440    2445    2450    2455    2460    2465    2470    2475    2480 */
 static const uint8_t  pll_int[16] =  {0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0D,   0x0D,   0x0D,   0x0D};
 static const uint16_t pll_frac[16] = {0x2800, 0x5000, 0x7800, 0xA000, 0xC800, 0xF000, 0x1800, 0x4000, 0x6800, 0x9000, 0xB800, 0xE000, 0x0800, 0x3000, 0x5800, 0x8000};
 static uint8_t rf_phy_channel = 0;
 
 /* Channel configurations for 2.4 */
-static const phy_rf_channel_configuration_s phy_24ghz = {2405000000, 5000000, 250000, 16, M_OQPSK};
+static const phy_rf_channel_configuration_s phy_24ghz = {2405000000U, 5000000U, 250000U, 16U, M_OQPSK};
 
 static const phy_device_channel_page_s phy_channel_pages[] = {
         { CHANNEL_PAGE_0, &phy_24ghz},
@@ -85,21 +139,64 @@ static const phy_device_channel_page_s phy_channel_pages[] = {
 };
 
 
+static rf_trx_part_e rf_radio_type_read(void);
+
+MBED_UNUSED static void rf_ack_wait_timer_start(uint16_t slots);
+MBED_UNUSED static void rf_ack_wait_timer_stop(void);
+MBED_UNUSED static void rf_handle_cca_ed_done(void);
+MBED_UNUSED static void rf_handle_tx_end(void);
+MBED_UNUSED static void rf_handle_rx_end(void);
+MBED_UNUSED static void rf_on(void);
+MBED_UNUSED static void rf_receive(void);
+MBED_UNUSED static void rf_poll_trx_state_change(rf_trx_states_t trx_state);
+MBED_UNUSED static void rf_init(void);
+MBED_UNUSED static void rf_set_mac_address(const uint8_t *ptr);
+MBED_UNUSED static int8_t rf_device_register(void);
+MBED_UNUSED static void rf_device_unregister(void);
+MBED_UNUSED static int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, data_protocol_e data_protocol );
+MBED_UNUSED static void rf_cca_abort(void);
+MBED_UNUSED static void rf_read_mac_address(uint8_t *ptr);
+MBED_UNUSED static int8_t rf_read_random(void);
+MBED_UNUSED static void rf_calibration_cb(void);
+MBED_UNUSED static void rf_init_phy_mode(void);
+MBED_UNUSED static void rf_ack_wait_timer_interrupt(void);
+MBED_UNUSED static void rf_calibration_timer_interrupt(void);
+MBED_UNUSED static void rf_calibration_timer_start(uint32_t slots);
+MBED_UNUSED static void rf_cca_timer_interrupt(void);
+MBED_UNUSED static void rf_cca_timer_start(uint32_t slots);
+MBED_UNUSED static uint16_t rf_get_phy_mtu_size(void);
+MBED_UNUSED static uint8_t rf_scale_lqi(int8_t rssi);
+
+/**
+ *  RF output power write
+ *
+ * \brief TX power has to be set before network start.
+ *
+ * \param power
+ *              See datasheet for TX power settings
+ *
+ * \return 0, Supported Value
+ * \return -1, Not Supported Value
+ */
+MBED_UNUSED static int8_t rf_tx_power_set(uint8_t power);
+MBED_UNUSED static uint8_t rf_tx_power_get(void);
+MBED_UNUSED static int8_t rf_enable_antenna_diversity(void);
+
 /* Private functions */
-static void    rf_abort(void);
-static void    rf_promiscuous(uint8_t mode);
-static void    rf_get_timestamp(uint32_t *pRetClk);
-static void    rf_set_timeout(uint32_t *pEndTime);
-static void    rf_set_power_state(xcvrPwrMode_t newState);
-static uint8_t rf_if_read_rnd(void);
-static uint8_t rf_convert_LQI(uint8_t hwLqi);
-static uint8_t rf_get_channel_energy(void);
-static uint8_t rf_convert_energy_level(uint8_t energyLevel);
-static int8_t  rf_convert_LQI_to_RSSI(uint8_t lqi);
-static int8_t  rf_interface_state_control(phy_interface_state_e new_state, uint8_t rf_channel);
-static int8_t  rf_extension(phy_extension_type_e extension_type,uint8_t *data_ptr);
-static int8_t  rf_address_write(phy_address_type_e address_type,uint8_t *address_ptr);
-static void rf_mac64_read(uint8_t *address);
+MBED_UNUSED static void    rf_abort(void);
+MBED_UNUSED static void    rf_promiscuous(uint8_t mode);
+MBED_UNUSED static void    rf_get_timestamp(uint32_t *pRetClk);
+MBED_UNUSED static void    rf_set_timeout(uint32_t *pEndTime);
+MBED_UNUSED static void    rf_set_power_state(xcvrPwrMode_t newState);
+MBED_UNUSED static uint8_t rf_if_read_rnd(void);
+MBED_UNUSED static uint8_t rf_convert_LQI(uint8_t hwLqi);
+MBED_UNUSED static uint8_t rf_get_channel_energy(void);
+MBED_UNUSED static uint8_t rf_convert_energy_level(uint8_t energyLevel);
+MBED_UNUSED static int8_t  rf_convert_LQI_to_RSSI(uint8_t lqi);
+MBED_UNUSED static int8_t  rf_interface_state_control(phy_interface_state_e new_state, uint8_t rf_channel);
+MBED_UNUSED static int8_t  rf_extension(phy_extension_type_e extension_type,uint8_t *data_ptr);
+MBED_UNUSED static int8_t  rf_address_write(phy_address_type_e address_type,uint8_t *address_ptr);
+MBED_UNUSED static void rf_mac64_read(uint8_t *address);
 
 
 
@@ -110,7 +207,7 @@ static void rf_mac64_read(uint8_t *address);
  *
  * \return
  */
-rf_trx_part_e rf_radio_type_read(void)
+static rf_trx_part_e rf_radio_type_read(void)
 {
     return FREESCALE_MCR20A;
 }
@@ -122,7 +219,7 @@ rf_trx_part_e rf_radio_type_read(void)
  *
  * \return rf_radio_driver_id Driver ID given by NET library
  */
-int8_t rf_device_register(void)
+static int8_t rf_device_register(void)
 {
     rf_trx_part_e radio_type;
 
@@ -135,7 +232,7 @@ int8_t rf_device_register(void)
     {
         /*Set pointer to MAC address*/
         device_driver.PHY_MAC = MAC_address;
-        device_driver.driver_description = "FREESCALE_MAC";
+        device_driver.driver_description = (char*)"FREESCALE_MAC";
 
         //Create setup Used Radio chips
         /*Type of RF PHY is SubGHz*/
@@ -171,13 +268,25 @@ int8_t rf_device_register(void)
 }
 
 /*
+ * \brief Function unregisters the RF driver.
+ *
+ * \param none
+ *
+ * \return none
+ */
+static void rf_device_unregister(void)
+{
+    arm_net_phy_unregister(rf_radio_driver_id);
+}
+
+/*
  * \brief Function returns the generated 8-bit random value for seeding Pseudo-random generator.
  *
  * \param none
  *
  * \return random value
  */
-int8_t rf_read_random(void)
+static int8_t rf_read_random(void)
 {
     return rf_rnd;
 }
@@ -189,7 +298,7 @@ int8_t rf_read_random(void)
  *
  * \return none
  */
-void rf_ack_wait_timer_interrupt(void)
+static void rf_ack_wait_timer_interrupt(void)
 {
     /* The packet was transmitted successfully, but no ACK was received */
     if (device_driver.phy_tx_done_cb) {
@@ -205,7 +314,7 @@ void rf_ack_wait_timer_interrupt(void)
  *
  * \return none
  */
-void rf_calibration_timer_interrupt(void)
+static void rf_calibration_timer_interrupt(void)
 {
 }
 
@@ -216,7 +325,7 @@ void rf_calibration_timer_interrupt(void)
  *
  * \return none
  */
-void rf_cca_timer_interrupt(void)
+static void rf_cca_timer_interrupt(void)
 {
     /* CCA time-out handled by Hardware */
 }
@@ -229,7 +338,7 @@ void rf_cca_timer_interrupt(void)
  *
  * \return none
  */
-void rf_ack_wait_timer_start(uint16_t time)
+static void rf_ack_wait_timer_start(uint16_t time)
 {
     uint32_t timeout;
 
@@ -245,7 +354,7 @@ void rf_ack_wait_timer_start(uint16_t time)
  *
  * \return none
  */
-void rf_calibration_timer_start(uint32_t slots)
+static void rf_calibration_timer_start(uint32_t slots)
 {
     (void)slots;
 }
@@ -257,7 +366,7 @@ void rf_calibration_timer_start(uint32_t slots)
  *
  * \return none
  */
-void rf_cca_timer_start(uint32_t slots)
+static void rf_cca_timer_start(uint32_t slots)
 {
     (void)slots;
 }
@@ -269,7 +378,7 @@ void rf_cca_timer_start(uint32_t slots)
  *
  * \return none
  */
-void rf_ack_wait_timer_stop(void)
+static void rf_ack_wait_timer_stop(void)
 {
 }
 
@@ -280,7 +389,7 @@ void rf_ack_wait_timer_stop(void)
  *
  * \return none
  */
-void rf_read_mac_address(uint8_t *ptr)
+static void rf_read_mac_address(uint8_t *ptr)
 {
     memcpy(ptr, MAC_address, 8);
 }
@@ -292,25 +401,14 @@ void rf_read_mac_address(uint8_t *ptr)
  *
  * \return none
  */
-void rf_set_mac_address(const uint8_t *ptr)
+static void rf_set_mac_address(const uint8_t *ptr)
 {
     memcpy(MAC_address, ptr, 8);
 }
 
-uint16_t rf_get_phy_mtu_size(void)
+static uint16_t rf_get_phy_mtu_size(void)
 {
     return device_driver.phy_MTU;
-}
-
-/*
- * \brief Function writes various RF settings in startup.
- *
- * \param none
- *
- * \return none
- */
-void rf_write_settings(void)
-{
 }
 
 /*
@@ -320,7 +418,7 @@ void rf_write_settings(void)
  *
  * \return none
  */
-void rf_set_short_adr(uint8_t * short_address)
+static void rf_set_short_adr(uint8_t * short_address)
 {
     /* Write one register at a time to be accessible from hibernate mode */
     MCR20Drv_IndirectAccessSPIWrite(MACSHORTADDRS0_MSB, short_address[0]);
@@ -334,7 +432,7 @@ void rf_set_short_adr(uint8_t * short_address)
  *
  * \return none
  */
-void rf_set_pan_id(uint8_t *pan_id)
+static void rf_set_pan_id(uint8_t *pan_id)
 {
     /* Write one register at a time to be accessible from hibernate mode */
     MCR20Drv_IndirectAccessSPIWrite(MACPANID0_MSB, pan_id[0]);
@@ -348,7 +446,7 @@ void rf_set_pan_id(uint8_t *pan_id)
  *
  * \return none
  */
-void rf_set_address(uint8_t *address)
+static void rf_set_address(uint8_t *address)
 {
     /* Write one register at a time to be accessible from hibernate mode */
     MCR20Drv_IndirectAccessSPIWrite(MACLONGADDRS0_0,  address[7]);
@@ -368,7 +466,7 @@ void rf_set_address(uint8_t *address)
  *
  * \return none
  */
-void rf_channel_set(uint8_t channel)
+static void rf_channel_set(uint8_t channel)
 {
     rf_phy_channel = channel;
     MCR20Drv_DirectAccessSPIWrite(PLL_INT0, pll_int[channel - 11]);
@@ -383,7 +481,7 @@ void rf_channel_set(uint8_t channel)
  *
  * \return none
  */
-void rf_init(void)
+static void rf_init(void)
 {
     uint32_t index;
     mPhySeqState = gIdle_c;
@@ -471,7 +569,7 @@ void rf_init(void)
  *
  * \return none
  */
-void rf_off(void)
+static void rf_off(void)
 {
     /* Abort any ongoing sequences */
     rf_abort();
@@ -486,7 +584,7 @@ void rf_off(void)
  *
  * \return none
  */
-void rf_poll_trx_state_change(rf_trx_states_t trx_state)
+static void rf_poll_trx_state_change(rf_trx_states_t trx_state)
 {
     (void)trx_state;
 }
@@ -500,7 +598,7 @@ void rf_poll_trx_state_change(rf_trx_states_t trx_state)
  * \return 0 Success
  * \return -1 Busy
  */
-int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, data_protocol_e data_protocol )
+static int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, data_protocol_e data_protocol )
 {
     uint8_t ccaMode;
 
@@ -581,7 +679,7 @@ int8_t rf_start_cca(uint8_t *data_ptr, uint16_t data_length, uint8_t tx_handle, 
  *
  * \return none
  */
-void rf_cca_abort(void)
+static void rf_cca_abort(void)
 {
     rf_abort();
 }
@@ -593,7 +691,7 @@ void rf_cca_abort(void)
  *
  * \return none
  */
-void rf_start_tx(void)
+static void rf_start_tx(void)
 {
     /* Perform TxRxAck sequence if required by phyTxMode */
     if( need_ack )
@@ -629,7 +727,7 @@ void rf_start_tx(void)
  *
  * \return none
  */
-void rf_receive(void)
+static void rf_receive(void)
 {
     uint8_t phyRegs[5];
 
@@ -663,7 +761,7 @@ void rf_receive(void)
  *
  * \return none
  */
-void rf_calibration_cb(void)
+static void rf_calibration_cb(void)
 {
 }
 
@@ -674,22 +772,8 @@ void rf_calibration_cb(void)
  *
  * \return none
  */
-void rf_on(void)
+static void rf_on(void)
 {
-}
-
-/*
- * \brief Function handles the received ACK frame.
- *
- * \param seq_number Sequence number of received ACK
- * \param data_pending Pending bit state in received ACK
- *
- * \return none
- */
-void rf_handle_ack(uint8_t seq_number, uint8_t data_pending)
-{
-    (void)seq_number;
-    (void)data_pending;
 }
 
 /*
@@ -699,7 +783,7 @@ void rf_handle_ack(uint8_t seq_number, uint8_t data_pending)
  *
  * \return none
  */
-void rf_handle_rx_end(void)
+static void rf_handle_rx_end(void)
 {
     uint8_t rf_lqi = MCR20Drv_DirectAccessSPIRead(LQI_VALUE);
     int8_t rf_rssi = 0;
@@ -732,7 +816,7 @@ void rf_handle_rx_end(void)
  *
  * \return none
  */
-void rf_shutdown(void)
+static void rf_shutdown(void)
 {
     /*Call RF OFF*/
     rf_off();
@@ -745,7 +829,7 @@ void rf_shutdown(void)
  *
  * \return none
  */
-void rf_handle_tx_end(void)
+static void rf_handle_tx_end(void)
 {
     uint8_t rx_frame_pending = mStatusAndControlRegs[IRQSTS1] & cIRQSTS1_RX_FRM_PEND;
 
@@ -782,7 +866,7 @@ void rf_handle_tx_end(void)
  *
  * \return none
  */
-void rf_handle_cca_ed_done(void)
+static void rf_handle_cca_ed_done(void)
 {
     /*Check the result of CCA process*/
     if( !(mStatusAndControlRegs[IRQSTS2] & cIRQSTS2_CCA) ) 
@@ -804,7 +888,7 @@ void rf_handle_cca_ed_done(void)
  * \return 0 Success
  * \return -1 Fail
  */
-int8_t rf_tx_power_set(uint8_t power)
+static int8_t rf_tx_power_set(uint8_t power)
 {
     /* gcapraru: Map MCR20A Tx power levels over ATMEL values */
     static uint8_t pwrLevelMapping[16] = {25,25,25,24,24,24,23,23,22,22,21,20,19,18,17,14};
@@ -826,7 +910,7 @@ int8_t rf_tx_power_set(uint8_t power)
  *
  * \return radio_tx_power TX power variable
  */
-uint8_t rf_tx_power_get(void)
+static uint8_t rf_tx_power_get(void)
 {
     return radio_tx_power;
 }
@@ -838,7 +922,7 @@ uint8_t rf_tx_power_get(void)
  *
  * \return 0 Success
  */
-int8_t rf_enable_antenna_diversity(void)
+static int8_t rf_enable_antenna_diversity(void)
 {
     uint8_t phyReg;
 
@@ -995,7 +1079,7 @@ static void rf_mac64_read(uint8_t *address)
  *
  * \return tmp Used PHY mode
  */
-void rf_init_phy_mode(void)
+static void rf_init_phy_mode(void)
 {
 }
 
@@ -1006,7 +1090,7 @@ void rf_init_phy_mode(void)
  *
  * \return none
  */
-void PHY_InterruptHandler(void)
+static void PHY_InterruptHandler(void)
 {
     uint8_t xcvseqCopy;
 
@@ -1245,7 +1329,7 @@ static uint8_t rf_if_read_rnd(void)
  *
  * \return RSSI
  */
-int8_t rf_convert_LQI_to_RSSI(uint8_t lqi)
+static int8_t rf_convert_LQI_to_RSSI(uint8_t lqi)
 {
     int32_t rssi = (50*lqi - 16820) / 163;
     return (int8_t)rssi;
@@ -1453,7 +1537,7 @@ static uint8_t rf_convert_energy_level(uint8_t energyLevel)
     return energyLevel;
 }
 
-uint8_t rf_scale_lqi(int8_t rssi)
+static uint8_t rf_scale_lqi(int8_t rssi)
 {
     uint8_t scaled_lqi;
     /*Worst case sensitivity*/
@@ -1499,4 +1583,200 @@ uint8_t rf_scale_lqi(int8_t rssi)
         scaled_lqi=255;
 
     return scaled_lqi;
+}
+
+
+/*****************************************************************************/
+/*              Layer porting to the Freescale driver                        */
+/*****************************************************************************/
+extern "C" void xcvr_spi_init(uint32_t instance)
+{
+    (void)instance;
+}
+
+extern "C" void RF_IRQ_Init(void) {
+    MBED_ASSERT(irq != NULL);
+    irq->mode(PullUp);
+    irq->fall(&PHY_InterruptHandler);
+}
+
+extern "C" void RF_IRQ_Enable(void) {
+    MBED_ASSERT(irq != NULL);
+    irq->enable_irq();
+}
+
+extern "C" void RF_IRQ_Disable(void) {
+    MBED_ASSERT(irq != NULL);
+    irq->disable_irq();
+}
+
+extern "C" uint8_t RF_isIRQ_Pending(void) {
+    MBED_ASSERT(rf != NULL);
+    return !irq_pin->read();
+}
+
+extern "C" void RF_RST_Set(int state) {
+    MBED_ASSERT(rst != NULL);
+    *rst = state;
+}
+
+extern "C" void gXcvrAssertCS_d(void)
+{
+    MBED_ASSERT(cs != NULL);
+    *cs = 0;
+}
+
+extern "C" void gXcvrDeassertCS_d(void)
+{
+    MBED_ASSERT(cs != NULL);
+    *cs = 1;
+}
+
+extern "C" void xcvr_spi_configure_speed(uint32_t instance, uint32_t freq)
+{
+    MBED_ASSERT(spi != NULL);
+    (void)instance;
+    spi->frequency(freq);
+}
+
+extern "C" void xcvr_spi_transfer(uint32_t instance,
+                         uint8_t * sendBuffer,
+                         uint8_t * receiveBuffer,
+                         size_t transferByteCount)
+{
+    MBED_ASSERT(spi != NULL);
+    (void)instance;
+    volatile uint8_t dummy;
+
+    if( !transferByteCount )
+        return;
+
+    if( !sendBuffer && !receiveBuffer )
+        return;
+
+    while( transferByteCount-- )
+    {
+        if( sendBuffer )
+        {
+            dummy = *sendBuffer;
+            sendBuffer++;
+        }
+        else
+        {
+            dummy = 0xFF;
+        }
+
+        dummy = spi->write(dummy);
+
+        if( receiveBuffer )
+        {
+            *receiveBuffer = dummy;
+            receiveBuffer++;
+        }
+    }
+}
+
+/*****************************************************************************/
+/*****************************************************************************/
+
+static void rf_if_lock(void)
+{
+    platform_enter_critical();
+}
+
+static void rf_if_unlock(void)
+{
+    platform_exit_critical();
+}
+
+NanostackRfPhyMcr20a::NanostackRfPhyMcr20a(PinName spi_mosi, PinName spi_miso,
+        PinName spi_sclk, PinName spi_cs,  PinName spi_rst, PinName spi_irq)
+    : _spi(spi_mosi, spi_miso, spi_sclk), _rf_cs(spi_cs), _rf_rst(spi_rst),
+      _rf_irq(spi_irq), _rf_irq_pin(spi_irq)
+{
+    // Do nothing
+}
+
+NanostackRfPhyMcr20a::~NanostackRfPhyMcr20a()
+{
+    // Do nothing
+}
+
+int8_t NanostackRfPhyMcr20a::rf_register()
+{
+
+    rf_if_lock();
+
+    if (rf != NULL) {
+        rf_if_unlock();
+        error("Multiple registrations of NanostackRfPhyMcr20a not supported");
+        return -1;
+    }
+
+    _pins_set();
+    int8_t radio_id = rf_device_register();
+    if (radio_id < 0) {
+        _pins_clear();
+        rf = NULL;
+    }
+
+    rf_if_unlock();
+    return radio_id;
+}
+
+void NanostackRfPhyMcr20a::rf_unregister()
+{
+    rf_if_lock();
+
+    if (rf != this) {
+        rf_if_unlock();
+        return;
+    }
+
+    rf_device_unregister();
+    rf = NULL;
+    _pins_clear();
+
+    rf_if_unlock();
+}
+
+void NanostackRfPhyMcr20a::get_mac_address(uint8_t *mac)
+{
+    rf_if_lock();
+
+    memcpy((void*)mac, (void*)MAC_address, sizeof(MAC_address));
+
+    rf_if_unlock();
+}
+
+void NanostackRfPhyMcr20a::set_mac_address(uint8_t *mac)
+{
+    rf_if_lock();
+
+    if (NULL != rf) {
+        error("NanostackRfPhyAtmel cannot change mac address when running");
+        rf_if_unlock();
+        return;
+    }
+    memcpy((void*)MAC_address, (void*)mac, sizeof(MAC_address));
+
+    rf_if_unlock();
+}
+
+void NanostackRfPhyMcr20a::_pins_set()
+{
+    spi = &_spi;
+    cs = &_rf_cs;
+    rst = &_rf_rst;
+    irq = &_rf_irq;
+    irq_pin = &_rf_irq_pin;
+}
+
+void NanostackRfPhyMcr20a::_pins_clear()
+{
+    spi = NULL;
+    cs = NULL;
+    rst = NULL;
+    irq = NULL;
+    irq_pin = NULL;
 }
