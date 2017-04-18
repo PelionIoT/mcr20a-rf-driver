@@ -17,8 +17,8 @@
 #include "ns_types.h"
 #include "platform/arm_hal_interrupt.h"
 #include "nanostack/platform/arm_hal_phy.h"
-#include "toolchain.h"
 #include <string.h>
+#include "rtos.h"
 
 /* Freescale headers which are for C files */
 extern "C" {
@@ -124,6 +124,7 @@ static DigitalOut *cs = NULL;
 static DigitalOut *rst = NULL;
 static InterruptIn *irq = NULL;
 static DigitalIn *irq_pin = NULL;
+static Thread irq_thread(osPriorityRealtime, 1024);
 
 /* Channel info */                 /* 2405    2410    2415    2420    2425    2430    2435    2440    2445    2450    2455    2460    2465    2470    2475    2480 */
 static const uint8_t  pll_int[16] =  {0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0D,   0x0D,   0x0D,   0x0D};
@@ -197,7 +198,8 @@ MBED_UNUSED static int8_t  rf_interface_state_control(phy_interface_state_e new_
 MBED_UNUSED static int8_t  rf_extension(phy_extension_type_e extension_type,uint8_t *data_ptr);
 MBED_UNUSED static int8_t  rf_address_write(phy_address_type_e address_type,uint8_t *address_ptr);
 MBED_UNUSED static void rf_mac64_read(uint8_t *address);
-
+static void PHY_InterruptThread(void);
+static void handle_interrupt(void);
 
 
 /*
@@ -1092,10 +1094,26 @@ static void rf_init_phy_mode(void)
  */
 static void PHY_InterruptHandler(void)
 {
-    uint8_t xcvseqCopy;
-
     /* Disable and clear transceiver(IRQ_B) interrupt */
     MCR20Drv_IRQ_Disable();
+    irq_thread.signal_set(1);
+}
+
+static void PHY_InterruptThread(void)
+{
+    for (;;) {
+        osEvent event = irq_thread.signal_wait(0);
+        if (event.status != osEventSignal) {
+            continue;
+        }
+        handle_interrupt();
+    }
+}
+
+static void handle_interrupt(void)
+{
+    uint8_t xcvseqCopy;
+
     //MCR20Drv_IRQ_Clear();
 
     /* Read transceiver interrupt status and control registers */
@@ -1712,6 +1730,8 @@ int8_t NanostackRfPhyMcr20a::rf_register()
         error("Multiple registrations of NanostackRfPhyMcr20a not supported");
         return -1;
     }
+
+    irq_thread.start(mbed::callback(PHY_InterruptThread));
 
     _pins_set();
     int8_t radio_id = rf_device_register();
