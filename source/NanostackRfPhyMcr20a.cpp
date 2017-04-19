@@ -53,8 +53,11 @@ extern "C" {
 #define gCcaCCA_MODE1_c        1
 
 #define gXcvrRunState_d       gXcvrPwrAutodoze_c
-#define gXcvrLowPowerState_d  gXcvrPwrHibernate_c
-
+#if !defined(TARGET_KW24D)
+  #define gXcvrLowPowerState_d  gXcvrPwrHibernate_c
+#else 
+  #define gXcvrLowPowerState_d  gXcvrPwrAutodoze_c
+#endif
 
 /* MCR20A XCVR states */
 typedef enum xcvrState_tag{
@@ -495,7 +498,9 @@ static void rf_init(void)
     /* Disable Tristate on MISO for SPI reads */
     MCR20Drv_IndirectAccessSPIWrite(MISC_PAD_CTRL, 0x02);
     /* Set XCVR clock output settings */
-    MCR20Drv_Set_CLK_OUT_Freq(gMCR20_ClkOutFreq_d);
+    #if !defined(TARGET_KW24D)
+      MCR20Drv_Set_CLK_OUT_Freq(gMCR20_ClkOutFreq_d);
+    #endif
     /* Set default XCVR power state */
     rf_set_power_state(gXcvrRunState_d);
 
