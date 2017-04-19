@@ -111,7 +111,9 @@ void
     xcvr_spi_configure_speed(gXcvrSpiInstance_c, 8000000);
 
     gXcvrDeassertCS_d();
-    MCR20Drv_RST_B_Deassert();
+    #if !defined(TARGET_KW24D)
+      MCR20Drv_RST_B_Deassert();
+    #endif
     RF_IRQ_Init();
     RF_IRQ_Disable();
     mPhyIrqDisableCnt = 1;
@@ -643,6 +645,7 @@ void MCR20Drv_RESET
 void
 )
 {
+  #if !defined(TARGET_KW24D)
     volatile uint32_t delay = 1000;
     //assert RST_B
     MCR20Drv_RST_B_Assert();
@@ -651,6 +654,7 @@ void
 
     //deassert RST_B
     MCR20Drv_RST_B_Deassert();
+  #endif
 }
 
 /*---------------------------------------------------------------------------
