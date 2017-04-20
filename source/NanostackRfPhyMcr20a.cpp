@@ -1714,7 +1714,7 @@ static void rf_if_unlock(void)
 
 NanostackRfPhyMcr20a::NanostackRfPhyMcr20a(PinName spi_mosi, PinName spi_miso,
         PinName spi_sclk, PinName spi_cs,  PinName spi_rst, PinName spi_irq)
-    : _spi(spi_mosi, spi_miso, spi_sclk), _rf_cs(spi_cs), _rf_rst(spi_rst),
+    : _spi(spi_mosi, spi_miso, spi_sclk), _rf_cs(spi_cs), _rf_rst(spi_rst, 1),
       _rf_irq(spi_irq), _rf_irq_pin(spi_irq)
 {
     // Do nothing
