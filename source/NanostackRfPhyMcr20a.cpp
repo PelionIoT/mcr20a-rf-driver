@@ -1102,8 +1102,8 @@ static void PHY_InterruptHandler(void)
 static void PHY_InterruptThread(void)
 {
     for (;;) {
-        osEvent event = irq_thread.signal_wait(0);
-        if (event.status != osEventSignal) {
+        uint32_t signal = irq_thread.signal_wait(0);
+        if (signal & osFlagsError) {
             continue;
         }
         handle_interrupt();
