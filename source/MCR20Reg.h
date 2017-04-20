@@ -343,7 +343,7 @@ typedef union regIRQSTS2_tag{
     uint8_t PB_ERR_IRQ:1;
     uint8_t ASM_IRQ:1;
     uint8_t TMRSTATUS:1;
-    uint8_t PI:1;
+    uint8_t PI_:1;
     uint8_t SRCADDR:1;
     uint8_t CCA:1;
     uint8_t CRCVALID:1;
