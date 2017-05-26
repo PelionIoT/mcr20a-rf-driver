@@ -1013,10 +1013,16 @@ static int8_t rf_extension(phy_extension_type_e extension_type, uint8_t *data_pt
             break;
             
         }
-        /*Return frame pending status*/
-        case PHY_EXTENSION_READ_LAST_ACK_PENDING_STATUS:
-            *data_ptr = MCR20Drv_DirectAccessSPIRead(IRQSTS1 & cIRQSTS1_RX_FRM_PEND);
+        /*Return frame Auto Ack frame pending status*/
+        case PHY_EXTENSION_READ_LAST_ACK_PENDING_STATUS: {
+            uint8_t reg = MCR20Drv_DirectAccessSPIRead(SRC_CTRL);
+            if (reg & cSRC_CTRL_ACK_FRM_PND) {
+                *data_ptr = 1;
+            } else {
+                *data_ptr  = 0;
+            }
             break;
+        }
         /*Set channel*/
         case PHY_EXTENSION_SET_CHANNEL:
             break;
