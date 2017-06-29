@@ -132,7 +132,6 @@ static Thread irq_thread(osPriorityRealtime, 1024);
 /* Channel info */                 /* 2405    2410    2415    2420    2425    2430    2435    2440    2445    2450    2455    2460    2465    2470    2475    2480 */
 static const uint8_t  pll_int[16] =  {0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0D,   0x0D,   0x0D,   0x0D};
 static const uint16_t pll_frac[16] = {0x2800, 0x5000, 0x7800, 0xA000, 0xC800, 0xF000, 0x1800, 0x4000, 0x6800, 0x9000, 0xB800, 0xE000, 0x0800, 0x3000, 0x5800, 0x8000};
-static uint8_t rf_phy_channel = 0;
 
 /* Channel configurations for 2.4 */
 static const phy_rf_channel_configuration_s phy_24ghz = {2405000000U, 5000000U, 250000U, 16U, M_OQPSK};
@@ -473,7 +472,6 @@ static void rf_set_address(uint8_t *address)
  */
 static void rf_channel_set(uint8_t channel)
 {
-    rf_phy_channel = channel;
     MCR20Drv_DirectAccessSPIWrite(PLL_INT0, pll_int[channel - 11]);
     MCR20Drv_DirectAccessSPIMultiByteWrite(PLL_FRAC0_LSB, (uint8_t *) &pll_frac[channel - 11], 2);
 }
@@ -1034,6 +1032,8 @@ static int8_t rf_extension(phy_extension_type_e extension_type, uint8_t *data_pt
         case PHY_EXTENSION_READ_LINK_STATUS:
             break;
         case PHY_EXTENSION_CONVERT_SIGNAL_INFO:
+            break;
+        case PHY_EXTENSION_ACCEPT_ANY_BEACON:
             break;
     }
     return 0;

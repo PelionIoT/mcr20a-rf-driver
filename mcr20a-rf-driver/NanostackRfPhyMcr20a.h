@@ -45,11 +45,11 @@ public:
     NanostackRfPhyMcr20a(PinName spi_mosi, PinName spi_miso,
                          PinName spi_sclk, PinName spi_cs,  PinName spi_rst,
                          PinName spi_irq);
-    ~NanostackRfPhyMcr20a();
-    int8_t rf_register();
-    void rf_unregister();
-    void get_mac_address(uint8_t *mac);
-    void set_mac_address(uint8_t *mac);
+    virtual ~NanostackRfPhyMcr20a();
+    virtual int8_t rf_register();
+    virtual void rf_unregister();
+    virtual void get_mac_address(uint8_t *mac);
+    virtual void set_mac_address(uint8_t *mac);
 
 private:
     SPI _spi;
