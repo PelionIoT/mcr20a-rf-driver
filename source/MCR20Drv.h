@@ -33,6 +33,7 @@
 #ifndef __MCR20_DRV_H__
 #define __MCR20_DRV_H__
 
+#include <stdint.h>
 
 /*****************************************************************************
  *                               INCLUDED HEADERS                            *

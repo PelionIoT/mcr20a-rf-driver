@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 #include "NanostackRfPhyMcr20a.h"
+
+#ifdef MBED_CONF_NANOSTACK_CONFIGURATION
+
 #include "ns_types.h"
 #include "platform/arm_hal_interrupt.h"
 #include "nanostack/platform/arm_hal_phy.h"
@@ -1811,3 +1814,5 @@ void NanostackRfPhyMcr20a::_pins_clear()
     irq = NULL;
     irq_pin = NULL;
 }
+
+#endif // MBED_CONF_NANOSTACK_CONFIGURATION

@@ -38,11 +38,13 @@
 *---------------------------------------------------------------------------*
 *****************************************************************************/
 
-#include "platform/arm_hal_interrupt.h"
 #include "MCR20Drv.h"
 #include "MCR20Reg.h"
 #include "XcvrSpi.h"
 
+#ifdef MBED_CONF_NANOSTACK_CONFIGURATION
+
+#include "platform/arm_hal_interrupt.h"
 
 /*****************************************************************************
 *                               PRIVATE VARIABLES                           *
@@ -677,3 +679,5 @@ uint8_t freqDiv
 
     MCR20Drv_DirectAccessSPIWrite((uint8_t) CLK_OUT_CTRL, clkOutCtrlReg);
 }
+
+#endif /* MBED_CONF_NANOSTACK_CONFIGURATION */
