@@ -18,6 +18,9 @@
 #define NANOSTACK_PHY_MCR20A_H_
 
 #include "mbed.h"
+
+#ifdef MBED_CONF_NANOSTACK_CONFIGURATION
+
 #include "NanostackRfPhy.h"
 
 // Arduino pin defaults for convenience
@@ -62,4 +65,5 @@ private:
     void _pins_clear();
 };
 
+#endif /* MBED_CONF_NANOSTACK_CONFIGURATION */
 #endif /* NANOSTACK_PHY_MCR20A_H_ */
