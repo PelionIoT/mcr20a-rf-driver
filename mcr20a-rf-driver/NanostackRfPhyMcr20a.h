@@ -60,6 +60,7 @@ private:
     DigitalOut _rf_rst;
     InterruptIn _rf_irq;
     DigitalIn _rf_irq_pin;
+    Thread _irq_thread;
 
     void _pins_set();
     void _pins_clear();
