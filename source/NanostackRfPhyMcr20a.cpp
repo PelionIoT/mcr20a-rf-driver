@@ -130,7 +130,7 @@ static DigitalOut *cs = NULL;
 static DigitalOut *rst = NULL;
 static InterruptIn *irq = NULL;
 static DigitalIn *irq_pin = NULL;
-static Thread irq_thread(osPriorityRealtime, 1024);
+static Thread *irq_thread = NULL;
 
 /* Channel info */                 /* 2405    2410    2415    2420    2425    2430    2435    2440    2445    2450    2455    2460    2465    2470    2475    2480 */
 static const uint8_t  pll_int[16] =  {0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0B,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0C,   0x0D,   0x0D,   0x0D,   0x0D};
@@ -1110,13 +1110,13 @@ static void PHY_InterruptHandler(void)
 {
     /* Disable and clear transceiver(IRQ_B) interrupt */
     MCR20Drv_IRQ_Disable();
-    irq_thread.signal_set(1);
+    irq_thread->signal_set(1);
 }
 
 static void PHY_InterruptThread(void)
 {
     for (;;) {
-        osEvent event = irq_thread.signal_wait(0);
+        osEvent event = irq_thread->signal_wait(0);
         if (event.status != osEventSignal) {
             continue;
         }
@@ -1724,7 +1724,8 @@ static void rf_if_unlock(void)
 NanostackRfPhyMcr20a::NanostackRfPhyMcr20a(PinName spi_mosi, PinName spi_miso,
         PinName spi_sclk, PinName spi_cs,  PinName spi_rst, PinName spi_irq)
     : _spi(spi_mosi, spi_miso, spi_sclk), _rf_cs(spi_cs), _rf_rst(spi_rst, 1),
-      _rf_irq(spi_irq), _rf_irq_pin(spi_irq)
+      _rf_irq(spi_irq), _rf_irq_pin(spi_irq),
+      _irq_thread(osPriorityRealtime, 1024)
 {
     // Do nothing
 }
@@ -1745,7 +1746,7 @@ int8_t NanostackRfPhyMcr20a::rf_register()
         return -1;
     }
 
-    irq_thread.start(mbed::callback(PHY_InterruptThread));
+    _irq_thread.start(mbed::callback(PHY_InterruptThread));
 
     _pins_set();
     int8_t radio_id = rf_device_register();
@@ -1804,6 +1805,7 @@ void NanostackRfPhyMcr20a::_pins_set()
     rst = &_rf_rst;
     irq = &_rf_irq;
     irq_pin = &_rf_irq_pin;
+    irq_thread = &_irq_thread;
 }
 
 void NanostackRfPhyMcr20a::_pins_clear()
@@ -1813,6 +1815,7 @@ void NanostackRfPhyMcr20a::_pins_clear()
     rst = NULL;
     irq = NULL;
     irq_pin = NULL;
+    irq_thread = NULL;
 }
 
 #endif // MBED_CONF_NANOSTACK_CONFIGURATION
