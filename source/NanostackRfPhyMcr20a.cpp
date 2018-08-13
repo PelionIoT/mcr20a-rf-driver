@@ -1818,4 +1818,14 @@ void NanostackRfPhyMcr20a::_pins_clear()
     irq_thread = NULL;
 }
 
+#if MBED_CONF_MCR20A_PROVIDE_DEFAULT || DEVICE_MCR20A
+
+NanostackRfPhy &NanostackRfPhy::get_default_instance()
+{
+    static NanostackRfPhyMcr20a rf_phy(MCR20A_SPI_MOSI, MCR20A_SPI_MISO, MCR20A_SPI_SCLK, MCR20A_SPI_CS, MCR20A_SPI_RST, MCR20A_SPI_IRQ);
+    return rf_phy;
+}
+
+#endif // MBED_CONF_MCR20A_PROVIDE_DEFAULT
+
 #endif // MBED_CONF_NANOSTACK_CONFIGURATION
