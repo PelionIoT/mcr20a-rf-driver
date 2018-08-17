@@ -121,7 +121,7 @@ static phy_device_driver_s device_driver;
 static uint8_t mStatusAndControlRegs[8];
 static uint8_t rf_rnd = 0;
 static int8_t  rf_radio_driver_id = -1;
-static uint8_t MAC_address[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+static uint8_t MAC_address[8];
 
 /* Driver instance handle and hardware */
 static NanostackRfPhyMcr20a *rf = NULL;
@@ -202,7 +202,6 @@ MBED_UNUSED static int8_t  rf_convert_LQI_to_RSSI(uint8_t lqi);
 MBED_UNUSED static int8_t  rf_interface_state_control(phy_interface_state_e new_state, uint8_t rf_channel);
 MBED_UNUSED static int8_t  rf_extension(phy_extension_type_e extension_type,uint8_t *data_ptr);
 MBED_UNUSED static int8_t  rf_address_write(phy_address_type_e address_type,uint8_t *address_ptr);
-MBED_UNUSED static void rf_mac64_read(uint8_t *address);
 static void PHY_InterruptThread(void);
 static void handle_interrupt(void);
 
@@ -562,8 +561,8 @@ static void rf_init(void)
 
     /*Read random variable. This will be used when seeding pseudo-random generator*/
     rf_rnd = rf_if_read_rnd();
-    /*Read eui64*/
-    rf_mac64_read(MAC_address);
+    /*Write initial eui64*/
+    rf_set_address(MAC_address);
     /*set default channel to 11*/
     rf_channel_set(11);
     /*Start receiver*/
@@ -1072,20 +1071,6 @@ static int8_t rf_address_write(phy_address_type_e address_type, uint8_t *address
             break;
     }
     return ret_val;
-}
-
-static void rf_mac64_read(uint8_t *address)
-{
-    /* Write one register at a time to be accessible from hibernate mode */
-    address[7] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_0);
-    address[6] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_8);
-    address[5] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_16);
-    address[4] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_24);
-    address[3] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_32);
-    address[2] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_40);
-    address[1] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_48);
-    address[0] = MCR20Drv_DirectAccessSPIRead(MACLONGADDRS0_56);
-
 }
 
 /*
@@ -1727,7 +1712,17 @@ NanostackRfPhyMcr20a::NanostackRfPhyMcr20a(PinName spi_mosi, PinName spi_miso,
       _rf_irq(spi_irq), _rf_irq_pin(spi_irq),
       _irq_thread(osPriorityRealtime, 1024)
 {
-    // Do nothing
+    char mac48[6];
+    mbed_mac_address(mac48);
+
+    MAC_address[0] = mac48[0];
+    MAC_address[1] = mac48[1];
+    MAC_address[2] = mac48[2];
+    MAC_address[3] = 0xFF;
+    MAC_address[4] = 0xFF;
+    MAC_address[5] = mac48[3];
+    MAC_address[6] = mac48[4];
+    MAC_address[7] = mac48[5];
 }
 
 NanostackRfPhyMcr20a::~NanostackRfPhyMcr20a()
