@@ -1663,7 +1663,6 @@ extern "C" void xcvr_spi_transfer(uint32_t instance,
 {
     MBED_ASSERT(spi != NULL);
     (void)instance;
-    volatile uint8_t dummy;
 
     if( !transferByteCount )
         return;
@@ -1671,26 +1670,8 @@ extern "C" void xcvr_spi_transfer(uint32_t instance,
     if( !sendBuffer && !receiveBuffer )
         return;
 
-    while( transferByteCount-- )
-    {
-        if( sendBuffer )
-        {
-            dummy = *sendBuffer;
-            sendBuffer++;
-        }
-        else
-        {
-            dummy = 0xFF;
-        }
-
-        dummy = spi->write(dummy);
-
-        if( receiveBuffer )
-        {
-            *receiveBuffer = dummy;
-            receiveBuffer++;
-        }
-    }
+    spi->write((const char *) sendBuffer,    sendBuffer    ? transferByteCount : 0,
+               (char *)       receiveBuffer, receiveBuffer ? transferByteCount : 0);
 }
 
 /*****************************************************************************/
