@@ -1813,7 +1813,7 @@ void NanostackRfPhyMcr20a::_pins_clear()
     irq_thread = NULL;
 }
 
-#if MBED_CONF_MCR20A_PROVIDE_DEFAULT || DEVICE_MCR20A
+#if MBED_CONF_MCR20A_PROVIDE_DEFAULT || TARGET_KW24D
 
 NanostackRfPhy &NanostackRfPhy::get_default_instance()
 {
