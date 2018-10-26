@@ -1197,8 +1197,7 @@ static void handle_interrupt(void)
         default:
             break;
         }
-        
-        MCR20Drv_IRQ_Enable();
+
         return;
     }
     /* Other IRQ. Clear XCVR interrupt flags */
