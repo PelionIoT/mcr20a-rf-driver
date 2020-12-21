@@ -3,4 +3,6 @@
 Support for:
  * MCR20A
 
-This driver is used with 6LoWPAN stack.
+This driver is used with Nanostack.
+
+
